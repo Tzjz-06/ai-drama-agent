@@ -1,0 +1,23 @@
+{
+  "name": "jiaozi-drama-studio-web",
+  "private": true,
+  "version": "0.2.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 5173",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 5173"
+  },
+  "dependencies": {
+    "tdesign-icons-vue-next": "^0.4.7",
+    "tdesign-vue-next": "^1.20.5",
+    "vue": "^3.5.40"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "@vitejs/plugin-vue": "^6.0.8",
+    "typescript": "^5.9.3",
+    "vite": "^8.2.0",
+    "vue-tsc": "^3.3.9"
+  }
+}

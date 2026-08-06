@@ -1,0 +1,11 @@
+{
+  "ok": true,
+  "elapsed_seconds": 203.2,
+  "generation_mode": "llm-assets-local-shots",
+  "story_genre": "古装、宫廷、逆袭、爽感反转短剧",
+  "character_count": 12,
+  "scene_count": 1,
+  "shot_count": 32,
+  "first_shot": "3.5秒视频，未命名场景，全景镜头，蛰伏皇子，当庭拒退婚（漫剧短剧剧本），远景，缓慢推进，???????，保持人物身份、服装、道具和空间结构连续，动作自然，镜头节奏清晰",
+  "continuity_issue_count": 0
+}

@@ -1,0 +1,35 @@
+# Local application state and generated media
+data/
+work/
+
+# Desktop build artifacts and distributable installers
+build/
+dist/
+outputs/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# Frontend dependencies and build artifacts
+frontend/node_modules/
+frontend/dist/
+web/
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+AGENTS.md
+
+# Editor and operating-system files
+.idea/
+.vscode/
+*.log
+Thumbs.db
+.DS_Store
