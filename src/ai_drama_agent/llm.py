@@ -98,12 +98,7 @@ class OpenAICompatibleClient:
         except (TimeoutError, socket.timeout) as error:
             raise RuntimeError("模型接口连接超时，请检查 Base URL、网络或供应商服务状态。") from error
 
-        try:
-            content = body["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError) as error:
-            raise RuntimeError("模型响应缺少 choices[0].message.content。") from error
-        if not isinstance(content, str):
-            raise RuntimeError("模型返回内容不是字符串。")
+        content = _extract_chat_completion_text(body)
         content = _strip_json_fence(content)
         try:
             parsed = json.loads(content)
@@ -246,12 +241,7 @@ class CCSwitchChatCompletionsClient:
         except (TimeoutError, socket.timeout) as error:
             raise RuntimeError("CC-Switch 代理调用超时，请检查本地代理或上游供应商状态。") from error
 
-        try:
-            content = body["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError) as error:
-            raise RuntimeError("CC-Switch Chat Completions 响应缺少 choices[0].message.content。") from error
-        if not isinstance(content, str):
-            raise RuntimeError("CC-Switch Chat Completions 返回内容不是字符串。")
+        content = _extract_chat_completion_text(body)
         content = _strip_json_fence(content)
         try:
             parsed = json.loads(content)
@@ -306,6 +296,38 @@ def _extract_responses_json_text(payload: dict[str, Any]) -> str:
             return "\n".join(parts)
 
     raise RuntimeError("CC-Switch Responses 响应缺少可解析的 output_text。")
+
+
+def _extract_chat_completion_text(payload: dict[str, Any]) -> str:
+    """Read text from OpenAI-compatible chat responses with common relay variants."""
+    choices = payload.get("choices")
+    if isinstance(choices, list) and choices:
+        first_choice = choices[0]
+        if isinstance(first_choice, dict):
+            message = first_choice.get("message")
+            if isinstance(message, dict):
+                content = message.get("content")
+                if isinstance(content, str) and content.strip():
+                    return content
+                if isinstance(content, list):
+                    parts = [
+                        block.get("text")
+                        for block in content
+                        if isinstance(block, dict) and isinstance(block.get("text"), str)
+                    ]
+                    if parts:
+                        return "\n".join(parts)
+            text = first_choice.get("text")
+            if isinstance(text, str) and text.strip():
+                return text
+
+    output_text = payload.get("output_text")
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text
+
+    raise RuntimeError(
+        "模型响应中未找到可解析文本（支持 choices[0].message.content、choices[0].text 或 output_text）。"
+    )
 
 
 def _default_json_headers(api_key: str = "") -> dict[str, str]:

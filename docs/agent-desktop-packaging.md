@@ -4,7 +4,6 @@
 
 - Windows 桌面端分发分为三层：`PyInstaller onedir` 便携目录、ZIP 压缩包、Inno Setup 安装器。
 - 桌面端入口是 `src/ai_drama_agent/desktop.py`，它会自己拉起内置本地 HTTP 服务，再由 Qt WebEngine 加载，不依赖外部浏览器常驻服务。
-- 图片、视频和合成任务由 `src/ai_drama_agent/local_media.py` 在桌面进程内执行。发布包必须通过 `imageio-ffmpeg` 自带 FFmpeg，不得要求客户安装 Docker、Redis、Go 或系统级 FFmpeg。
 - 浏览器访问 `http://127.0.0.1:8765/` 时，容易误连旧的 `python -m ai_drama_agent.web --offline-demo` 进程；桌面端应优先用随机端口内置服务规避这个问题。
 
 ## 根因模式
@@ -15,7 +14,6 @@
 ## 禁止事项
 
 - 不要把桌面端继续设计成必须手动先启动 `python -m ai_drama_agent.web`。
-- 不要把 Docker Compose、Redis 或 Go Worker 作为客户运行媒体任务的前置条件；它们只允许用于开发环境中的历史兼容验证。
 - 不要只交付 `dist/` 目录就宣称已经完成桌面安装包。
 - 不要把安装目录放到需要管理员权限的位置作为唯一方案；默认优先使用当前用户目录安装。
 

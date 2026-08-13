@@ -18,7 +18,7 @@ def app_data_root() -> Path:
 
     Frozen desktop builds must keep mutable data outside the bundled
     ``_internal`` directory so replacing an installation cannot remove user
-    projects, sessions, or generated media.
+    projects or sessions.
     """
     if getattr(sys, "frozen", False):
         local_app_data = os.getenv("LOCALAPPDATA")

@@ -103,27 +103,29 @@ class FrameForgeWindow(QMainWindow):
             )
 
     def _handle_download(self, download: QWebEngineDownloadRequest) -> None:
-        if download.downloadFileName().lower().endswith(".docx"):
+        suffix = Path(download.downloadFileName()).suffix.lower()
+        if suffix in {".docx", ".zip"}:
             suggested_path = Path(
                 QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DownloadLocation)
             ) / download.downloadFileName()
+            file_filter = "ZIP 压缩包 (*.zip)" if suffix == ".zip" else "Word 文档 (*.docx)"
             selected_path, _ = QFileDialog.getSaveFileName(
                 self,
-                "导出完整提示词",
+                "导出剧本和分镜" if suffix == ".zip" else "导出 Word 文档",
                 str(suggested_path),
-                "Word 文档 (*.docx)",
+                file_filter,
             )
             if not selected_path:
                 download.cancel()
-                self.statusBar().showMessage("已取消导出完整提示词", 3000)
+                self.statusBar().showMessage("已取消导出", 3000)
                 return
             destination = Path(selected_path)
-            if destination.suffix.lower() != ".docx":
-                destination = destination.with_suffix(".docx")
+            if destination.suffix.lower() != suffix:
+                destination = destination.with_suffix(suffix)
             download.setDownloadDirectory(str(destination.parent))
             download.setDownloadFileName(destination.name)
             download.accept()
-            self.statusBar().showMessage(f"正在导出完整提示词：{destination.name}", 5000)
+            self.statusBar().showMessage(f"正在导出：{destination.name}", 5000)
             return
         download.setDownloadDirectory(
             QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DownloadLocation)

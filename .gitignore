@@ -6,6 +6,7 @@ work/
 build/
 dist/
 outputs/
+output/
 
 # Python
 __pycache__/

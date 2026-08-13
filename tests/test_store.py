@@ -49,6 +49,109 @@ class StoreTests(unittest.TestCase):
             with self.assertRaises(AuthError):
                 store.login("creator", "wrong-password")
 
+    def test_production_assets_can_be_edited_without_changing_their_ids(self) -> None:
+        from ai_drama_agent.store import LocalStore, StoreError
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = LocalStore(Path(directory) / "app_state.json")
+            user = store.register("creator", "", "secret123")
+            project = store.create_project(user["id"], {"title": "测试项目"})
+            chapter = store.create_chapter(user["id"], project["id"], {"title": "第一集"})
+            store.save_production(
+                user["id"],
+                project["id"],
+                chapter["id"],
+                {
+                    "characters": [
+                        {
+                            "id": "CHAR-001",
+                            "name": "林默",
+                            "role": "快递员",
+                            "appearance": "黑色短发",
+                            "costume": "深色夹克",
+                            "turnaround_prompt": "角色提示词",
+                            "status": "待确认",
+                        }
+                    ],
+                    "scenes": [],
+                    "props": [],
+                    "shots": [{"id": "SHOT-001", "character_ids": ["CHAR-001"]}],
+                },
+            )
+
+            updated = store.update_production_asset(
+                user["id"],
+                project["id"],
+                chapter["id"],
+                "characters",
+                "CHAR-001",
+                {"id": "CHAR-999", "name": "林默（雨夜）", "costume": "湿透的深色夹克"},
+            )
+
+            character = updated["production"]["characters"][0]
+            self.assertEqual(character["id"], "CHAR-001")
+            self.assertEqual(character["name"], "林默（雨夜）")
+            self.assertEqual(character["costume"], "湿透的深色夹克")
+            self.assertEqual(updated["production"]["shots"][0]["character_ids"], ["CHAR-001"])
+            with self.assertRaises(StoreError):
+                store.update_production_asset(
+                    user["id"], project["id"], chapter["id"], "characters", "CHAR-404", {}
+                )
+            with self.assertRaises(ValueError):
+                store.update_production_asset(
+                    user["id"], project["id"], chapter["id"], "videos", "CHAR-001", {}
+                )
+
+    def test_shot_prompts_can_be_edited_without_changing_shot_or_asset_references(self) -> None:
+        from ai_drama_agent.store import LocalStore, StoreError
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = LocalStore(Path(directory) / "app_state.json")
+            user = store.register("creator", "", "secret123")
+            project = store.create_project(user["id"], {"title": "测试项目"})
+            chapter = store.create_chapter(user["id"], project["id"], {"title": "第一集"})
+            store.save_production(
+                user["id"],
+                project["id"],
+                chapter["id"],
+                {
+                    "characters": [],
+                    "scenes": [],
+                    "props": [],
+                    "shots": [
+                        {
+                            "id": "SHOT-001",
+                            "scene_id": "SCENE-001",
+                            "character_ids": ["CHAR-001"],
+                            "prop_ids": ["PROP-001"],
+                            "first_frame_prompt": "旧首帧",
+                            "video_prompt": "旧视频",
+                            "last_frame_prompt": "旧尾帧",
+                            "negative_prompt": "旧负面",
+                        }
+                    ],
+                },
+            )
+
+            updated = store.update_shot_prompts(
+                user["id"],
+                project["id"],
+                chapter["id"],
+                "SHOT-001",
+                {"first_frame_prompt": "新首帧", "negative_prompt": "新负面", "id": "SHOT-999"},
+            )
+
+            shot = updated["production"]["shots"][0]
+            self.assertEqual(shot["id"], "SHOT-001")
+            self.assertEqual(shot["scene_id"], "SCENE-001")
+            self.assertEqual(shot["character_ids"], ["CHAR-001"])
+            self.assertEqual(shot["first_frame_prompt"], "新首帧")
+            self.assertEqual(shot["negative_prompt"], "新负面")
+            with self.assertRaises(StoreError):
+                store.update_shot_prompts(
+                    user["id"], project["id"], chapter["id"], "SHOT-404", {}
+                )
+
     def test_login_session_survives_store_restart_without_persisting_raw_token(self) -> None:
         from ai_drama_agent.store import AuthError, LocalStore
 
@@ -89,57 +192,6 @@ class StoreTests(unittest.TestCase):
                 second = LocalStore()
                 self.assertIn("new", second._data["users"])
                 self.assertNotIn("legacy-changed", second._data["users"])
-
-    def test_delete_project_removes_its_local_tasks(self) -> None:
-        from ai_drama_agent.store import LocalStore
-
-        with tempfile.TemporaryDirectory() as directory:
-            store = LocalStore(Path(directory) / "app_state.json")
-            user = store.register("creator", "", "secret123")
-            project = store.create_project(user["id"], {"title": "待删除项目"})
-            chapter = store.create_chapter(user["id"], project["id"], {"title": "第一集"})
-            task = store.create_task(user["id"], project["id"], chapter["id"], "merge", {})
-
-            store.delete_project(user["id"], project["id"])
-
-            self.assertEqual(store.list_projects(user["id"]), [])
-            self.assertEqual(store.list_tasks(user["id"], project["id"], chapter["id"]), [])
-            self.assertNotIn(task["id"], store._data["tasks"])
-
-    def test_cancelled_task_cannot_be_overwritten_by_worker_updates(self) -> None:
-        from ai_drama_agent.store import LocalStore
-
-        with tempfile.TemporaryDirectory() as directory:
-            store = LocalStore(Path(directory) / "app_state.json")
-            user = store.register("creator", "", "secret123")
-            project = store.create_project(user["id"], {"title": "任务项目"})
-            chapter = store.create_chapter(user["id"], project["id"], {"title": "第一集"})
-            task = store.create_task(user["id"], project["id"], chapter["id"], "merge", {})
-
-            cancelled = store.cancel_task(user["id"], project["id"], chapter["id"], task["id"])
-            after_worker_update = store.update_task(
-                user["id"], task["id"], {"status": "completed", "progress": 100}
-            )
-
-            self.assertEqual(cancelled["status"], "cancelled")
-            self.assertEqual(after_worker_update["status"], "cancelled")
-
-    def test_delete_task_only_removes_terminal_task(self) -> None:
-        from ai_drama_agent.store import LocalStore
-
-        with tempfile.TemporaryDirectory() as directory:
-            store = LocalStore(Path(directory) / "app_state.json")
-            user = store.register("creator", "", "secret123")
-            project = store.create_project(user["id"], {"title": "任务项目"})
-            chapter = store.create_chapter(user["id"], project["id"], {"title": "第一集"})
-            task = store.create_task(user["id"], project["id"], chapter["id"], "merge", {})
-
-            with self.assertRaises(ValueError):
-                store.delete_task(user["id"], project["id"], chapter["id"], task["id"])
-
-            store.cancel_task(user["id"], project["id"], chapter["id"], task["id"])
-            store.delete_task(user["id"], project["id"], chapter["id"], task["id"])
-            self.assertEqual(store.list_tasks(user["id"], project["id"], chapter["id"]), [])
 
 
 if __name__ == "__main__":

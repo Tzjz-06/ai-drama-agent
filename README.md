@@ -47,7 +47,7 @@ $env:AI_DRAMA_MODEL = "你的模型名称"
 
 如果本机已经安装并启用了 CC-Switch 的 Codex 代理，可在 Web 设置里切换到“使用 CC-Switch”模式。此时：
 
-- 饺子短剧只读取 `C:\Users\LEGION\.cc-switch\cc-switch.db` 中当前启用的 Codex 供应商
+- 饺子短剧只读取当前 Windows 用户目录下 `.cc-switch\cc-switch.db` 中启用的 Codex 供应商
 - 调用通过本机代理 `http://127.0.0.1:15721/v1/responses` 发起
 - API Key 继续由 CC-Switch 管理，不会传给浏览器
 - 在 CC-Switch 内切换中转站后，饺子短剧会自动跟随
@@ -179,7 +179,7 @@ python -m ai_drama_agent.desktop --smoke-test
 构建完成后，输出位于：
 
 ```text
-C:\Users\LEGION\Documents\Codex\2026-08-02\ai\outputs\frameforge-desktop
+outputs\frameforge-desktop
 ```
 
 ### Windows 安装器产物
@@ -189,9 +189,13 @@ C:\Users\LEGION\Documents\Codex\2026-08-02\ai\outputs\frameforge-desktop
 ```text
 FrameForgeStudio\
 FrameForgeStudio-windows.zip
-FrameForgeStudio-Setup-0.1.0.exe
+FrameForgeStudio-Setup-0.3.0.exe
 ```
 
 - `FrameForgeStudio\`：便携桌面版，打开目录后直接运行 `FrameForgeStudio.exe`
 - `FrameForgeStudio-windows.zip`：便于分发和备份的压缩包
-- `FrameForgeStudio-Setup-0.1.0.exe`：本地安装器，双击后会安装到当前用户目录并创建开始菜单入口
+- `FrameForgeStudio-Setup-0.3.0.exe`：本地安装器，双击后会安装到当前用户目录并创建开始菜单入口
+
+## 许可证
+
+本项目采用 [MIT License](LICENSE) 开源。

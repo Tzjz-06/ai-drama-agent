@@ -223,114 +223,87 @@ class LocalStore:
             self._save()
             return dict(chapter)
 
-    def create_task(
+    def update_production_asset(
         self,
         user_id: str,
         project_id: str,
         chapter_id: str,
-        task_type: str,
+        asset_type: str,
+        asset_id: str,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
-        with self._lock:
-            self._owned_project(user_id, project_id)
-            self.get_chapter(user_id, project_id, chapter_id)
-            task_id = f"task_{secrets.token_hex(8)}"
-            task = {
-                "id": task_id,
-                "user_id": user_id,
-                "project_id": project_id,
-                "chapter_id": chapter_id,
-                "type": task_type,
-                "status": "queued",
-                "progress": 0,
-                "message": "等待任务队列",
-                "result": None,
-                "payload": dict(payload),
-                "created_at": _now(),
-                "updated_at": _now(),
-            }
-            self._data["tasks"][task_id] = task
-            self._save()
-            return _public_task(task)
+        editable_fields = {
+            "characters": ("name", "role", "appearance", "costume", "turnaround_prompt"),
+            "scenes": ("name", "location", "time", "lighting", "layout", "environment_prompt"),
+            "props": ("name", "description", "owner"),
+        }
+        fields = editable_fields.get(asset_type)
+        if fields is None:
+            raise ValueError("不支持的资产类型。")
 
-    def update_task(self, user_id: str, task_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
-            task = self._data["tasks"].get(task_id)
-            if task is None or task.get("user_id") != user_id:
-                raise StoreError("任务不存在或无权访问。")
-            if task.get("status") == "cancelled" and payload.get("status") != "cancelled":
-                return _public_task(task)
-            for key in ("status", "message"):
+            project = self._owned_project(user_id, project_id)
+            chapter = self._owned_chapter(project, chapter_id)
+            production = chapter.get("production")
+            if not isinstance(production, dict):
+                raise StoreError("当前章节还没有可编辑的制作包。")
+            asset_list = production.get(asset_type)
+            if not isinstance(asset_list, list):
+                raise StoreError("当前章节没有此类资产。")
+            asset = next(
+                (item for item in asset_list if isinstance(item, dict) and item.get("id") == asset_id),
+                None,
+            )
+            if asset is None:
+                raise StoreError("资产不存在。")
+            if "name" in payload and (
+                not isinstance(payload["name"], str) or not payload["name"].strip()
+            ):
+                raise ValueError("资产名称不能为空。")
+            for key in fields:
                 if isinstance(payload.get(key), str):
-                    task[key] = payload[key].strip()
-            if isinstance(payload.get("progress"), int):
-                task["progress"] = max(0, min(100, payload["progress"]))
-            if isinstance(payload.get("result"), dict):
-                task["result"] = dict(payload["result"])
-            task["updated_at"] = _now()
+                    asset[key] = payload[key].strip()
+            chapter["updated_at"] = _now()
+            project["updated_at"] = chapter["updated_at"]
             self._save()
-            return _public_task(task)
+            return dict(chapter)
 
-    def cancel_task(
-        self, user_id: str, project_id: str, chapter_id: str, task_id: str
+    def update_shot_prompts(
+        self,
+        user_id: str,
+        project_id: str,
+        chapter_id: str,
+        shot_id: str,
+        payload: dict[str, Any],
     ) -> dict[str, Any]:
+        editable_fields = (
+            "first_frame_prompt",
+            "video_prompt",
+            "last_frame_prompt",
+            "negative_prompt",
+        )
         with self._lock:
-            self._owned_project(user_id, project_id)
-            task = self._data["tasks"].get(task_id)
-            if (
-                task is None
-                or task.get("user_id") != user_id
-                or task.get("project_id") != project_id
-                or task.get("chapter_id") != chapter_id
-            ):
-                raise StoreError("任务不存在或无权访问。")
-            if task.get("status") not in {"queued", "retrying", "running"}:
-                raise ValueError("该任务已结束，无法取消。")
-            task["status"] = "cancelled"
-            task["message"] = "任务已取消；已发出的上游请求结果将被忽略。"
-            task["updated_at"] = _now()
+            project = self._owned_project(user_id, project_id)
+            chapter = self._owned_chapter(project, chapter_id)
+            production = chapter.get("production")
+            if not isinstance(production, dict):
+                raise StoreError("当前章节还没有可编辑的制作包。")
+            shots = production.get("shots")
+            if not isinstance(shots, list):
+                raise StoreError("当前章节没有分镜。")
+            shot = next(
+                (item for item in shots if isinstance(item, dict) and item.get("id") == shot_id),
+                None,
+            )
+            if shot is None:
+                raise StoreError("分镜不存在。")
+            for key in editable_fields:
+                if isinstance(payload.get(key), str):
+                    shot[key] = payload[key].strip()
+            chapter["updated_at"] = _now()
+            project["updated_at"] = chapter["updated_at"]
             self._save()
-            return _public_task(task)
-
-    def is_task_cancelled(self, user_id: str, task_id: str) -> bool:
-        with self._lock:
-            task = self._data["tasks"].get(task_id)
-            return bool(task and task.get("user_id") == user_id and task.get("status") == "cancelled")
-
-    def delete_task(
-        self, user_id: str, project_id: str, chapter_id: str, task_id: str
-    ) -> None:
-        with self._lock:
-            self._owned_project(user_id, project_id)
-            task = self._data["tasks"].get(task_id)
-            if (
-                task is None
-                or task.get("user_id") != user_id
-                or task.get("project_id") != project_id
-                or task.get("chapter_id") != chapter_id
-            ):
-                raise StoreError("任务不存在或无权访问。")
-            if task.get("status") in {"queued", "retrying", "running"}:
-                raise ValueError("请先取消执行中的任务，再删除任务记录。")
-            del self._data["tasks"][task_id]
-            self._save()
-
-    def get_task(self, user_id: str, task_id: str) -> dict[str, Any]:
-        with self._lock:
-            task = self._data["tasks"].get(task_id)
-            if task is None or task.get("user_id") != user_id:
-                raise StoreError("任务不存在或无权访问。")
-            return _public_task(task)
-
-    def list_tasks(self, user_id: str, project_id: str, chapter_id: str) -> list[dict[str, Any]]:
-        with self._lock:
-            tasks = [
-                task for task in self._data["tasks"].values()
-                if task.get("user_id") == user_id
-                and task.get("project_id") == project_id
-                and task.get("chapter_id") == chapter_id
-            ]
-            return [_public_task(task) for task in sorted(tasks, key=lambda item: item["updated_at"], reverse=True)]
+            return dict(chapter)
 
     def _owned_project(self, user_id: str, project_id: str) -> dict[str, Any]:
         project = self._data["projects"].get(project_id)
@@ -385,17 +358,6 @@ def _now() -> str:
 
 def _public_user(user: dict[str, Any]) -> dict[str, str]:
     return {"id": str(user["id"]), "username": str(user["username"]), "email": str(user.get("email", ""))}
-
-
-def _public_task(task: dict[str, Any]) -> dict[str, Any]:
-    public = {
-        key: task[key]
-        for key in ("id", "project_id", "chapter_id", "type", "status", "progress", "message", "created_at", "updated_at")
-    }
-    public["result"] = task.get("result")
-    payload = task.get("payload")
-    public["shot_id"] = payload.get("shot_id", "") if isinstance(payload, dict) else ""
-    return public
 
 
 def _text(payload: dict[str, Any], key: str, default: str) -> str:

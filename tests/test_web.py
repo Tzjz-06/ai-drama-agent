@@ -11,6 +11,47 @@ from unittest.mock import patch
 
 
 class WebTests(unittest.TestCase):
+    def test_quick_create_generates_script_and_seedance_storyboard_in_one_call(self) -> None:
+        from ai_drama_agent.store import LocalStore
+        from ai_drama_agent.web import DramaWebHandler
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = LocalStore(Path(directory) / "app_state.json")
+            user = store.register("quick-create", "", "secret123")
+            handler = object.__new__(DramaWebHandler)
+            handler.store = store
+            handler.offline_demo = True
+            response: dict[str, object] = {}
+            handler._send_json = response.update
+
+            handler._handle_quick_create(
+                user["id"],
+                {"title": "雨夜来信", "brief": "失忆快递员收到一封来自未来的信"},
+            )
+
+            project = response["project"]
+            chapter = response["chapter"]
+            production = response["production"]
+            self.assertEqual(len(project["chapters"]), 1)
+            self.assertIn("△ ", chapter["content"])
+            self.assertTrue(production["characters"])
+            self.assertTrue(production["scenes"])
+            self.assertTrue(production["shots"])
+            self.assertIn("Seedance 2.0", production["shots"][0]["video_prompt"])
+            self.assertEqual(len(store.list_projects(user["id"])), 1)
+
+    def test_quick_progress_is_isolated_by_user_and_records_completion(self) -> None:
+        from ai_drama_agent.web import DramaWebHandler
+
+        DramaWebHandler._set_quick_progress(
+            "progress-test", "user-1", 100, "创作完成", "已保存", status="completed"
+        )
+
+        progress = DramaWebHandler._get_quick_progress("progress-test")
+        self.assertEqual(progress["user_id"], "user-1")
+        self.assertEqual(progress["status"], "completed")
+        self.assertEqual(progress["percent"], 100)
+
     def test_api_helpers(self) -> None:
         from ai_drama_agent.web import _optional_text, _positive_int, _required_text
 
@@ -138,130 +179,6 @@ class WebTests(unittest.TestCase):
                     "gpt-4.1",
                 ).complete_json("s", "u")
 
-    def test_task_queue_uses_asynq_gateway(self) -> None:
-        from ai_drama_agent.task_queue import AsynqGateway
-
-        class FakeResponse:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *args: object) -> None:
-                return None
-
-            def read(self) -> bytes:
-                return b'{"ok":true}'
-
-        captured = []
-
-        def fake_urlopen(request, timeout):
-            captured.append(request)
-            return FakeResponse()
-
-        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
-            AsynqGateway("http://queue.test").enqueue({"id": "task_1", "type": "video"})
-
-        self.assertEqual(captured[0].full_url, "http://queue.test/enqueue")
-        self.assertEqual(json.loads(captured[0].data.decode("utf-8"))["type"], "video")
-
-    def test_media_provider_key_is_not_persisted_in_local_task_data(self) -> None:
-        from ai_drama_agent.store import LocalStore
-        from ai_drama_agent.web import DramaWebHandler
-
-        with tempfile.TemporaryDirectory() as directory:
-            store = LocalStore(Path(directory) / "app_state.json")
-            user = store.register("media-test", "", "secret123")
-            project = store.create_project(user["id"], {"title": "媒体配置测试"})
-            chapter = store.create_chapter(user["id"], project["id"], {"title": "第一集"})
-            handler = object.__new__(DramaWebHandler)
-            handler.store = store
-            response: dict[str, object] = {}
-            handler._send_json = response.update
-
-            with patch("ai_drama_agent.web.LocalMediaRunner.submit") as submit:
-                handler._handle_task_create(
-                    user["id"],
-                    project["id"],
-                    chapter["id"],
-                    {
-                        "type": "video",
-                        "shot_id": "SH001",
-                        "prompt": "test prompt",
-                        "provider_config": {
-                            "category": "video",
-                            "api_url": "https://video.example.test/generate",
-                            "model": "video-v1",
-                            "api_key": "secret-provider-key",
-                        },
-                    },
-                )
-
-            task_id = str(response["task"]["id"])  # type: ignore[index]
-            persisted_payload = store._data["tasks"][task_id]["payload"]
-            self.assertNotIn("provider_config", persisted_payload)
-            submitted_task, submitted_provider = submit.call_args.args
-            self.assertEqual(submitted_task["id"], task_id)
-            self.assertEqual(submitted_provider["api_key"], "secret-provider-key")
-            self.assertEqual(submitted_provider["provider"], "compatible")
-
-    def test_media_provider_requires_endpoint_and_model(self) -> None:
-        from ai_drama_agent.web import _resolve_media_provider
-
-        with self.assertRaises(ValueError):
-            _resolve_media_provider(
-                {"category": "image", "api_url": "", "model": ""},
-                task_type="frame_image",
-                environment_url="",
-                environment_key="",
-            )
-
-    def test_openai_media_provider_does_not_require_endpoint(self) -> None:
-        from ai_drama_agent.web import _resolve_media_provider
-
-        provider = _resolve_media_provider(
-            {
-                "category": "video",
-                "provider": "openai_sora",
-                "api_key": "customer-key",
-                "model": "sora-2",
-            },
-            task_type="video",
-            environment_url="",
-            environment_key="",
-        )
-
-        self.assertEqual(provider["provider"], "openai_sora")
-        self.assertEqual(provider["api_url"], "")
-
-    def test_local_media_urls_are_owned_by_local_runner(self) -> None:
-        from ai_drama_agent.local_media import LocalMediaRunner
-
-        self.assertEqual(
-            LocalMediaRunner._task_id_from_media_url("/api/media/tasks/task_123/file"),
-            "task_123",
-        )
-        self.assertEqual(LocalMediaRunner._task_id_from_media_url("https://example.test/video.mp4"), "")
-
-    def test_local_media_runner_migrates_legacy_media_once(self) -> None:
-        from ai_drama_agent.local_media import LocalMediaRunner
-        from ai_drama_agent.store import LocalStore
-
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            legacy_media = root / "bundle" / "data" / "media"
-            user_data = root / "local-app-data" / "FrameForgeStudio"
-            legacy_media.mkdir(parents=True)
-            (legacy_media / "task_123.png").write_bytes(b"legacy-media")
-            store = LocalStore(user_data / "app_state.json")
-
-            with patch("ai_drama_agent.local_media.app_root", return_value=root / "bundle"):
-                runner = LocalMediaRunner(store)
-                self.assertEqual(runner.media_file("task_123").read_bytes(), b"legacy-media")
-
-                runner.media_root.joinpath("task_123.png").write_bytes(b"new-media")
-                (legacy_media / "task_123.png").write_bytes(b"legacy-changed")
-                second_runner = LocalMediaRunner(store)
-                self.assertEqual(second_runner.media_file("task_123").read_bytes(), b"new-media")
-
     def test_import_txt_script(self) -> None:
         from ai_drama_agent.web import _extract_uploaded_script
 
@@ -323,6 +240,72 @@ class WebTests(unittest.TestCase):
         text = "\n".join(paragraph.text for paragraph in document.paragraphs)
         for expected in ("角色提示词", "场景提示词", "道具提示词", "首帧提示词", "视频提示词", "尾帧提示词", "负面提示词"):
             self.assertIn(expected, text)
+
+    def test_chat_completion_text_supports_common_relay_shapes(self) -> None:
+        from ai_drama_agent.llm import _extract_chat_completion_text
+
+        self.assertEqual(
+            _extract_chat_completion_text({"choices": [{"message": {"content": "plain"}}]}),
+            "plain",
+        )
+        self.assertEqual(
+            _extract_chat_completion_text({"choices": [{"message": {"content": [{"text": "part one"}, {"text": "part two"}]}}]}),
+            "part one\npart two",
+        )
+        self.assertEqual(
+            _extract_chat_completion_text({"choices": [{"text": "legacy"}]}),
+            "legacy",
+        )
+        self.assertEqual(_extract_chat_completion_text({"output_text": "fallback"}), "fallback")
+        with self.assertRaisesRegex(RuntimeError, "choices"):
+            _extract_chat_completion_text({})
+
+    def test_script_document_contains_outline_and_content(self) -> None:
+        from docx import Document
+
+        from ai_drama_agent.web import _build_script_document
+
+        content = _build_script_document(
+            {"title": "Project Title"},
+            {"title": "Episode One", "outline": "Outline text", "content": "Scene one\nDialogue two"},
+        )
+        document = Document(io.BytesIO(content))
+        text = "\n".join(paragraph.text for paragraph in document.paragraphs)
+        for expected in ("Project Title", "Episode One", "Outline text", "Scene one", "Dialogue two"):
+            self.assertIn(expected, text)
+
+    def test_production_archive_contains_script_and_storyboard_documents(self) -> None:
+        from docx import Document
+
+        from ai_drama_agent.web import _build_production_archive
+
+        content = _build_production_archive(
+            {"title": "雨夜归来", "style": "电影感国漫"},
+            {"episode_no": 1, "title": "便利店", "outline": "本章梗概", "content": "第一场\n角色对白"},
+            {
+                "characters": [],
+                "scenes": [],
+                "props": [],
+                "shots": [{"id": "shot_001", "video_prompt": "分镜视频提示词"}],
+            },
+        )
+        with zipfile.ZipFile(io.BytesIO(content)) as archive:
+            names = archive.namelist()
+            self.assertEqual(len(names), 2)
+            self.assertTrue(any(name.endswith("-剧本.docx") for name in names))
+            self.assertTrue(any(name.endswith("-分镜提示词.docx") for name in names))
+            script_name = next(name for name in names if name.endswith("-剧本.docx"))
+            prompt_name = next(name for name in names if name.endswith("-分镜提示词.docx"))
+            script_text = "\n".join(
+                paragraph.text
+                for paragraph in Document(io.BytesIO(archive.read(script_name))).paragraphs
+            )
+            prompt_text = "\n".join(
+                paragraph.text
+                for paragraph in Document(io.BytesIO(archive.read(prompt_name))).paragraphs
+            )
+        self.assertIn("角色对白", script_text)
+        self.assertIn("分镜视频提示词", prompt_text)
 
     def test_pdf_always_mode_skips_native_text_layer(self) -> None:
         from ai_drama_agent.web import _extract_uploaded_script

@@ -325,8 +325,9 @@ def _extract_characters(sentences: list[str]) -> list[dict[str, Any]]:
                 "continuity_anchors": [f"{name} 的身份和外观在所有镜头中保持一致"],
                 "status": "待确认",
                 "turnaround_prompt": (
-                    f"{name} 角色三视图，正面、侧面、背面，全身标准站姿，"
-                    f"{appearance}，{costume}，二维动画角色设定图，纯色背景，细节清晰，无文字"
+                    f"{name} 角色四视图，纯白背景；左侧为面部特写，右侧为全身正面、侧面、背面，"
+                    f"全身站立，正面视角，从头到脚完整入镜，双手自然垂落，不持物，表情中性，"
+                    f"{appearance}，{costume}，鞋子完整可见，沿用项目视觉风格，细节清晰，无文字无水印"
                 ),
                 "expression_prompt": (
                     f"{name} 表情设定表：观察、紧张、犹豫、释然，保持相同脸型、发型和服装，"
@@ -377,8 +378,9 @@ def _extract_explicit_scenes(script: str, visual_style: str) -> list[dict[str, A
                 "atmosphere": _infer_tone(body),
                 "status": "待确认",
                 "environment_prompt": (
-                    f"9:16竖屏漫剧场景设定，{location}，{time_value}，{weather_value}，"
-                    f"{visual_style}，空间纵深清晰，固定陈设稳定，便于角色走位与镜头推拉。"
+                    f"{visual_style}场景设定，{location}，{time_value}，{weather_value}，无人物，"
+                    "同一空间的正打、反打和侧面全景，站位与空间关系清晰，"
+                    "光线色调统一，固定陈设稳定，无文字无水印。"
                 ),
                 "negative_prompt": "空间跳变，朝代错乱，额外人物，字幕，文字气泡，低清晰度，过曝，模糊背景",
             }
@@ -399,6 +401,8 @@ def _build_scenes(
         lighting = "自然光，光线方向待确认"
         if any(word in script for word in ("夜", "深夜", "凌晨")):
             lighting = "低照度夜景光线，局部光源形成空间层次"
+        fixed_elements = _scene_fixed_elements(location, script)
+        context = next((line.strip() for line in script.splitlines() if location in line), script[:160])
         scenes.append(
             {
                 "id": scene_id,
@@ -406,15 +410,20 @@ def _build_scenes(
                 "location": location,
                 "time": time_value,
                 "weather": weather_value,
-                "layout": f"{location} 的空间布局根据剧本动作安排，前景、中景和背景保持清晰层次",
+                "layout": (
+                    f"前景：{fixed_elements[0] if fixed_elements else location}；"
+                    f"中景：{fixed_elements[1] if len(fixed_elements) > 1 else '人物活动区待确认'}；"
+                    f"背景：{fixed_elements[2] if len(fixed_elements) > 2 else '空间边界待确认'}。"
+                    f"剧本场景证据：{context}"
+                ),
                 "lighting": lighting,
                 "palette": "根据视觉风格统一色彩，主体与背景保持可分离",
-                "fixed_elements": [location, "剧本中出现的关键空间结构"],
+                "fixed_elements": fixed_elements or [location, "固定陈设待确认"],
                 "atmosphere": _infer_tone(script),
                 "status": "待确认",
                 "environment_prompt": (
-                    f"{location}，{time_value}，{weather_value}，{visual_style}，"
-                    "电影感构图，空间纵深清晰，保持建筑结构和固定道具连续"
+                    f"{visual_style}场景设定，{location}，{time_value}，{weather_value}，无人物，"
+                    "正打、反打和侧面全景，电影感构图，空间纵深清晰，建筑结构和固定道具连续，无文字无水印"
                 ),
                 "negative_prompt": "空间结构跳变，时间天气无故变化，新增建筑，错误文字，水印，低清晰度",
             }
@@ -426,16 +435,33 @@ def _build_props(script: str, characters: list[dict[str, Any]]) -> list[dict[str
     props: list[dict[str, Any]] = []
     for index, prop_name in enumerate(_unique_matches(script, _PROP_WORDS), start=1):
         owner = characters[0]["name"] if characters else "待确认"
+        evidence = next((line.strip() for line in script.splitlines() if prop_name in line), "")
+        if not evidence:
+            evidence = next((sentence.strip() for sentence in _sentences(script) if prop_name in sentence), "")
         props.append(
             {
                 "id": f"P{index:03d}",
                 "name": prop_name,
-                "description": f"剧本中出现的{prop_name}，具体材质和外观待确认",
+                "description": (
+                    f"剧本证据：{evidence or '待确认'}；"
+                    f"{prop_name} 的外形、材质、颜色和磨损痕迹以剧本明确描述为准，未提供部分待确认；"
+                    f"剧情用途：{_prop_usage(prop_name, evidence)}"
+                ),
                 "owner": owner,
                 "continuity_notes": f"{prop_name} 的位置和持有者随剧情节点连续变化",
             }
         )
     return props
+
+
+def _prop_usage(prop_name: str, evidence: str) -> str:
+    if any(word in evidence for word in ("发现", "收到", "找到", "揭开")):
+        return f"作为情节线索被发现或揭示（{prop_name}）"
+    if any(word in evidence for word in ("撑", "拿", "握", "抱", "戴", "挂")):
+        return f"作为角色动作中的可见道具（{prop_name}）"
+    if any(word in evidence for word in ("打", "刺", "砍", "指向", "击")):
+        return f"作为冲突动作的关键道具（{prop_name}）"
+    return "剧情用途待确认"
 
 
 def _build_production_locks(
@@ -454,7 +480,7 @@ def _build_production_locks(
         "camera_rules": "单镜头内只保留一种主要覆盖模式，避免镜头路径自相矛盾。",
         "action_intensity": "动作先触发、再表情、后肢体，保证竖屏观感一眼可读。",
         "continuity_lock": "道具位置、视线方向、角色站位和伤痕服装状态必须跨镜头稳定。",
-        "sound_mood": "对白、旁白和音效要为竖屏自动翻页留出停顿与字幕停留时间。",
+        "sound_mood": "对白、旁白和音效按动作时间轴进入；只生成音效，不生成音乐，不烧录字幕。",
         "forbidden_drift": "禁止角色脸崩、服装跳变、空间重置、道具消失、字幕烧录。",
     }
 
@@ -494,7 +520,7 @@ def _build_material_map(
                 "type": "道具",
                 "purpose": f"锁定关键道具 {prop['name']} 的造型和位置",
                 "notes": "适用于特写与交接动作镜头",
-                "prompt": f"{prop['name']} 道具设定图，材质清晰，可用于竖屏漫剧特写。",
+                "prompt": f"{prop['name']} 道具独立设定图，纯白背景，不出现人物和真实环境，材质、年代感与使用痕迹清晰，无文字无水印。",
             }
         )
     return materials
@@ -536,7 +562,7 @@ def _build_shots(
     shots: list[dict[str, Any]] = []
     current_time = 0.0
     for index, sentence in enumerate(sentences[:20], start=1):
-        duration = min(5.2, max(2.5, round(1.8 + len(sentence) / 28, 1)))
+        duration = min(5.0, max(2.5, round(1.8 + len(sentence) / 28, 1)))
         scene = scenes[min(index - 1, len(scenes) - 1)]
         sentence_character_ids = [
             character["id"] for character in characters if character["name"] in sentence
@@ -668,7 +694,7 @@ def _fallback_character(title: str, sentences: list[str]) -> dict[str, Any]:
         "voice_profile": "待确认",
         "continuity_anchors": ["角色身份和外观需要在后续确认"],
         "status": "待确认",
-        "turnaround_prompt": "主角角色三视图，正面、侧面、背面，全身标准站姿，外观和服装待确认，二维动画角色设定图",
+        "turnaround_prompt": "主角角色四视图，纯白背景，左侧面部特写，右侧全身正面、侧面、背面；从头到脚完整入镜，双手自然垂落，不持物，表情中性，鞋子完整可见，外观和服装待确认，无文字无水印",
         "expression_prompt": "主角表情设定表：观察、紧张、释然，二维动画角色设定图",
         "negative_prompt": "角色身份变化，服装变化，多余人物，文字，水印，低清晰度",
     }
@@ -687,7 +713,7 @@ def _fallback_scene(time_value: str, weather: str, style: str) -> dict[str, Any]
         "fixed_elements": ["待确认"],
         "atmosphere": "待确认",
         "status": "待确认",
-        "environment_prompt": f"地点待确认，{time_value}，{weather}，{style}，电影感空间构图",
+        "environment_prompt": f"{style}场景设定，地点待确认，{time_value}，{weather}，场景中无人物，正打、反打、侧面全景，电影感空间构图，无文字无水印",
         "negative_prompt": "空间结构跳变，错误时间，错误天气，文字，水印，低清晰度",
     }
 
@@ -744,12 +770,12 @@ def _unique_matches(script: str, choices: tuple[str, ...]) -> list[str]:
 
 def _extract_costume(context: str) -> str:
     match = re.search(r"(?:穿着|身穿|穿|披着|戴着)([^，。；\n]{2,24})", context)
-    return match.group(1) if match else "服装待确认"
+    return match.group(1) if match else "服装品类、主色、材质或层次：剧本未提供，待确认"
 
 
 def _extract_appearance(context: str) -> str:
     match = re.search(r"(?:黑色|白色|棕色|短发|长发|年轻|老人|女孩|男孩|女子|男人)[^，。；\n]{0,20}", context)
-    return match.group(0) if match else "外观待确认"
+    return match.group(0) if match else "脸型、发型发色、体型或年龄感：剧本未提供，待确认"
 
 
 def _is_plausible_character_name(name: str) -> bool:
@@ -1067,13 +1093,16 @@ def _build_video_prompt(
         audio_parts.append(f"[音效：{sound_design}]")
     audio_text = " ".join(audio_parts) if audio_parts else "[音效：环境声轻垫底，给角色动作留停顿]"
     return (
-        f"9:16竖屏漫剧视频提示词，时长 {duration:.1f}s，场景：{scene.get('location', scene.get('name', '未命名场景'))}，"
+        f"Seedance 2.0 视频提示词，9:16竖屏，时长 {duration:.1f}s，视觉风格：{visual_style}，"
+        f"场景：{scene.get('location', scene.get('name', '未命名场景'))}，"
         f"{scene.get('time', '时间待确认')}，{scene.get('weather', '天气待确认')}，镜头类型：{shot_size}，"
         f"机位：{camera_position}，焦段：{lens}，运镜：{motion}，角色一致性锁定：{character_names}，"
-        f"关键道具：{props}，视觉风格：{visual_style}。首帧：{first_frame_prompt}。"
+        f"关键道具：{props}。首帧：{first_frame_prompt}。"
         f"镜头目标：围绕“{action}”完成一个清晰可读的视觉动作，并在 3-5 秒窗口内给出至少一次可见变化。"
-        f"动作节拍：{'；'.join(beat_lines)}。表演顺序：触发事件 -> 眼神/嘴角微表情 -> 肢体动作 -> 收束停顿，情绪基调 {emotion}。"
-        f"{audio_text}。尾帧：{last_frame_prompt}。禁止镜头乱切、角色换脸、服装跳变、空间重置、字幕烧录。"
+        f"表演顺序：触发事件 -> 眼神/嘴角微表情 -> 肢体动作 -> 收束停顿，情绪基调 {emotion}。"
+        f"时间轴：{'；'.join(beat_lines)}。{audio_text}。"
+        f"【声音】只生成对白、旁白和环境/动作音效，不生成音乐。不要生成任何字幕。"
+        f"尾帧：{last_frame_prompt}。禁止镜头乱切、角色换脸、服装跳变、空间重置、字幕、文字和水印。"
     )
 
 
@@ -1118,7 +1147,7 @@ def _scale_shot_runtime(shots: list[dict[str, Any]], target_runtime: float) -> N
         if index == len(shots) - 1:
             duration = round(max(2.0, target_runtime - current_time), 1)
         else:
-            duration = round(min(5.2, max(2.0, original_duration * scale)), 1)
+            duration = round(min(5.0, max(2.0, original_duration * scale)), 1)
         shot["start_second"] = round(current_time, 1)
         shot["duration_seconds"] = duration
         shot["action_beats"] = _beats(

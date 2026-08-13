@@ -9,6 +9,7 @@ import io
 import json
 import mimetypes
 import os
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -33,10 +34,10 @@ from .llm import (
     OpenAICompatibleClient,
     build_cc_switch_client,
 )
-from .local_media import LocalMediaRunner
 from .models import DramaProject, GenerationOptions
 from .ocr import extract_scanned_script
 from .paths import web_root
+from .prompts import QUICK_SCRIPT_SYSTEM_PROMPT, build_quick_script_prompt
 from .pipeline import (
     DramaAgent,
     build_default_agent,
@@ -49,7 +50,6 @@ from .pipeline import (
     render_storyboard,
 )
 from .store import AuthError, LocalStore, StoreError
-from .task_queue import TaskQueueError
 
 
 WEB_ROOT = web_root()
@@ -64,7 +64,8 @@ class DramaWebHandler(BaseHTTPRequestHandler):
 
     offline_demo = False
     store = LocalStore()
-    media_runner = LocalMediaRunner(store)
+    _quick_progress: dict[str, dict[str, Any]] = {}
+    _quick_progress_lock = threading.Lock()
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -91,16 +92,19 @@ class DramaWebHandler(BaseHTTPRequestHandler):
                 self._json_error(HTTPStatus.UNAUTHORIZED, str(error))
             return
 
-        if parsed.path.startswith("/api/media/tasks/") and parsed.path.endswith("/file"):
+        if parsed.path.startswith("/api/progress/"):
+            progress_id = parsed.path.removeprefix("/api/progress/").strip("/")
             try:
                 user = self._require_user()
-                task_id = parsed.path.removeprefix("/api/media/tasks/").removesuffix("/file").strip("/")
-                self.store.get_task(user["id"], task_id)
-                self._serve_file(self.media_runner.media_file(task_id))
+                progress = self._get_quick_progress(progress_id)
+                if not progress or progress.get("user_id") != user["id"]:
+                    self._json_error(HTTPStatus.NOT_FOUND, "进度记录不存在")
+                    return
+                self._send_json(
+                    {"progress": {key: value for key, value in progress.items() if key != "user_id"}}
+                )
             except AuthError as error:
                 self._json_error(HTTPStatus.UNAUTHORIZED, str(error))
-            except (StoreError, FileNotFoundError):
-                self._json_error(HTTPStatus.NOT_FOUND, "媒体文件不存在。")
             return
 
         if parsed.path == "/api/projects":
@@ -126,11 +130,11 @@ class DramaWebHandler(BaseHTTPRequestHandler):
                 if len(parts) == 6 and parts[3] == "chapters" and parts[5] == "prompts.docx":
                     self._handle_prompt_document(user["id"], parts[2], parts[4])
                     return
-                if len(parts) == 6 and parts[3] == "chapters" and parts[5] == "tasks":
-                    self._send_json({"tasks": self.store.list_tasks(user["id"], parts[2], parts[4])})
+                if len(parts) == 6 and parts[3] == "chapters" and parts[5] == "script.docx":
+                    self._handle_script_document(user["id"], parts[2], parts[4])
                     return
-                if len(parts) == 7 and parts[3] == "chapters" and parts[5] == "tasks":
-                    self._send_json({"task": self.store.get_task(user["id"], parts[6])})
+                if len(parts) == 6 and parts[3] == "chapters" and parts[5] == "production.zip":
+                    self._handle_production_archive(user["id"], parts[2], parts[4])
                     return
             except AuthError as error:
                 self._json_error(HTTPStatus.UNAUTHORIZED, str(error))
@@ -169,13 +173,13 @@ class DramaWebHandler(BaseHTTPRequestHandler):
                 self._require_user()
                 self._handle_model_test(payload)
                 return
-            if path == "/api/media/test":
-                self._require_user()
-                self._handle_media_test(payload)
-                return
             if path == "/api/projects":
                 user = self._require_user()
                 self._send_json({"project": self.store.create_project(user["id"], payload)})
+                return
+            if path == "/api/projects/quick-create":
+                user = self._require_user()
+                self._handle_quick_create(user["id"], payload)
                 return
             if path.startswith("/api/projects/"):
                 user = self._require_user()
@@ -185,28 +189,11 @@ class DramaWebHandler(BaseHTTPRequestHandler):
                         {"chapter": self.store.create_chapter(user["id"], parts[2], payload)}
                     )
                     return
-                if len(parts) == 6 and parts[3] == "chapters" and parts[5] == "tasks":
-                    self._handle_task_create(user["id"], parts[2], parts[4], payload)
-                    return
                 if len(parts) == 6 and parts[3] == "chapters" and parts[5] == "generate":
                     self._handle_project_generate(user["id"], parts[2], parts[4], payload)
                     return
                 if len(parts) == 6 and parts[3] == "chapters" and parts[5] == "draft":
                     self._handle_chapter_draft(user["id"], parts[2], parts[4], payload)
-                    return
-                if (
-                    len(parts) == 8
-                    and parts[3] == "chapters"
-                    and parts[5] == "tasks"
-                    and parts[7] == "cancel"
-                ):
-                    self._send_json(
-                        {
-                            "task": self.store.cancel_task(
-                                user["id"], parts[2], parts[4], parts[6]
-                            )
-                        }
-                    )
                     return
             if path == "/api/import-script":
                 self._handle_import_script(payload)
@@ -221,8 +208,6 @@ class DramaWebHandler(BaseHTTPRequestHandler):
             self._json_error(HTTPStatus.NOT_FOUND, str(error))
         except ValueError as error:
             self._json_error(HTTPStatus.BAD_REQUEST, str(error))
-        except TaskQueueError as error:
-            self._json_error(HTTPStatus.SERVICE_UNAVAILABLE, str(error))
         except Exception as error:
             self._json_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(error))
 
@@ -246,6 +231,39 @@ class DramaWebHandler(BaseHTTPRequestHandler):
                     }
                 )
                 return
+            if (
+                len(parts) == 8
+                and parts[1] == "projects"
+                and parts[3] == "chapters"
+                and parts[5] == "assets"
+            ):
+                self._send_json(
+                    {
+                        "chapter": self.store.update_production_asset(
+                            user["id"],
+                            parts[2],
+                            parts[4],
+                            parts[6],
+                            parts[7],
+                            payload,
+                        )
+                    }
+                )
+                return
+            if (
+                len(parts) == 7
+                and parts[1] == "projects"
+                and parts[3] == "chapters"
+                and parts[5] == "shots"
+            ):
+                self._send_json(
+                    {
+                        "chapter": self.store.update_shot_prompts(
+                            user["id"], parts[2], parts[4], parts[6], payload
+                        )
+                    }
+                )
+                return
             self._json_error(HTTPStatus.NOT_FOUND, "接口不存在。")
         except AuthError as error:
             self._json_error(HTTPStatus.UNAUTHORIZED, str(error))
@@ -263,15 +281,6 @@ class DramaWebHandler(BaseHTTPRequestHandler):
             parts = _route_parts(path)
             if len(parts) == 3 and parts[1] == "projects":
                 self.store.delete_project(user["id"], parts[2])
-                self._send_json({"ok": True})
-                return
-            if (
-                len(parts) == 7
-                and parts[1] == "projects"
-                and parts[3] == "chapters"
-                and parts[5] == "tasks"
-            ):
-                self.store.delete_task(user["id"], parts[2], parts[4], parts[6])
                 self._send_json({"ok": True})
                 return
             self._json_error(HTTPStatus.NOT_FOUND, "接口不存在。")
@@ -306,6 +315,163 @@ class DramaWebHandler(BaseHTTPRequestHandler):
                 "files": files,
                 "mode": project.metadata.get("generation_mode", "unknown"),
             }
+        )
+
+    def _handle_quick_create(self, user_id: str, payload: dict[str, Any]) -> None:
+        brief = _required_text(payload, "brief")
+        title = _optional_text(payload, "title", "一句话短剧")
+        genre = _optional_text(payload, "genre", "短剧")
+        style = _optional_text(payload, "style", "电影感二维国漫")
+        aspect_ratio = _optional_text(payload, "aspect_ratio", "9:16")
+        progress_id = _optional_text(payload, "progress_id", "")[:128]
+        if progress_id:
+            self._set_quick_progress(
+                progress_id, user_id, 5, "准备创作", "正在校验输入并准备制作流程"
+            )
+        project = self.store.create_project(
+            user_id,
+            {
+                "title": title,
+                "description": brief,
+                "genre": genre,
+                "style": style,
+                "aspect_ratio": aspect_ratio,
+            },
+        )
+        try:
+            if progress_id:
+                self._set_quick_progress(
+                    progress_id, user_id, 15, "创建项目和章节", "正在建立项目与首章"
+                )
+            chapter = self.store.create_chapter(
+                user_id,
+                project["id"],
+                {"title": "第 1 集"},
+            )
+            if progress_id:
+                self._set_quick_progress(
+                    progress_id, user_id, 25, "创作完整剧本", "正在根据一句话梗概扩写完整剧本"
+                )
+            draft = self._draft_quick_script(payload, project, chapter, brief)
+            chapter = self.store.update_chapter(
+                user_id,
+                project["id"],
+                chapter["id"],
+                {
+                    "title": str(draft.get("title") or chapter["title"]),
+                    "outline": str(draft.get("outline") or brief),
+                    "content": str(draft.get("content") or ""),
+                    "status": "draft",
+                },
+            )
+            if not chapter["content"].strip():
+                raise RuntimeError("模型没有返回章节正文。")
+            if progress_id:
+                self._set_quick_progress(
+                    progress_id, user_id, 50, "完整剧本已完成", "剧本正文已生成，准备拆解制作资产"
+                )
+                self._set_quick_progress(
+                    progress_id, user_id, 60, "生成资产与分镜", "正在生成角色、场景、道具和分镜提示词"
+                )
+            generated, files = self._run_generation(
+                {
+                    **payload,
+                    "script": chapter["content"],
+                    "title": f"{project['title']} · {chapter['title']}",
+                    "style": style,
+                    "aspect_ratio": aspect_ratio,
+                    "fps": 24,
+                    "target_model": "seedance-2.0",
+                }
+            )
+            chapter = self.store.save_production(
+                user_id, project["id"], chapter["id"], generated.to_dict()
+            )
+            if progress_id:
+                self._set_quick_progress(
+                    progress_id,
+                    user_id,
+                    100,
+                    "资产与分镜已完成",
+                    "剧本、资产和分镜提示词已生成并保存",
+                    status="completed",
+                )
+            self._send_json(
+                {
+                    "project": self.store.get_project(user_id, project["id"]),
+                    "chapter": chapter,
+                    "production": generated.to_dict(),
+                    "files": files,
+                    "mode": generated.metadata.get("generation_mode", "unknown"),
+                }
+            )
+        except Exception as error:
+            if progress_id:
+                current = self._get_quick_progress(progress_id) or {}
+                self._set_quick_progress(
+                    progress_id,
+                    user_id,
+                    current.get("percent"),
+                    current.get("stage", "创作失败"),
+                    "当前阶段未完成",
+                    status="failed",
+                    error=str(error),
+                )
+            self.store.delete_project(user_id, project["id"])
+            raise
+
+    @classmethod
+    def _set_quick_progress(
+        cls,
+        progress_id: str,
+        user_id: str,
+        percent: int | None,
+        stage: str,
+        message: str,
+        *,
+        status: str = "running",
+        error: str = "",
+    ) -> None:
+        now = time.time()
+        with cls._quick_progress_lock:
+            cls._quick_progress[progress_id] = {
+                "user_id": user_id,
+                "status": status,
+                "percent": percent,
+                "stage": stage,
+                "message": message,
+                "error": error,
+                "updated_at": now,
+            }
+            cutoff = now - 3600
+            for stale_id, item in list(cls._quick_progress.items()):
+                if item.get("updated_at", now) < cutoff:
+                    cls._quick_progress.pop(stale_id, None)
+
+    @classmethod
+    def _get_quick_progress(cls, progress_id: str) -> dict[str, Any] | None:
+        with cls._quick_progress_lock:
+            item = cls._quick_progress.get(progress_id)
+            return dict(item) if item else None
+
+    def _draft_quick_script(
+        self,
+        payload: dict[str, Any],
+        project: dict[str, Any],
+        chapter: dict[str, Any],
+        brief: str,
+    ) -> dict[str, Any]:
+        if self.offline_demo:
+            return _offline_quick_script(brief, project["title"])
+        return self._build_client(payload).complete_json(
+            QUICK_SCRIPT_SYSTEM_PROMPT,
+            build_quick_script_prompt(
+                brief=brief,
+                title=project["title"],
+                genre=project["genre"],
+                style=project["style"],
+                episode_no=int(chapter["episode_no"]),
+            ),
         )
 
     def _run_generation(self, payload: dict[str, Any]) -> tuple[DramaProject, dict[str, str]]:
@@ -361,14 +527,13 @@ class DramaWebHandler(BaseHTTPRequestHandler):
         chapter = self.store.get_chapter(user_id, project_id, chapter_id)
         client = self._build_client(payload)
         result = client.complete_json(
-            "你是专业的中文短剧编剧。必须返回 JSON 对象，字段为 title、outline、content。正文要有场次、人物、动作和对白，节奏紧凑，不得解释创作过程。",
-            (
-                f"项目：{project['title']}\n"
-                f"题材：{project['genre']}\n"
-                f"视觉风格：{project['style']}\n"
-                f"章节：第 {chapter['episode_no']} 集\n"
-                f"创作要求：{brief}\n"
-                "请生成可直接进入分镜拆解的完整中文章节剧本。"
+            QUICK_SCRIPT_SYSTEM_PROMPT,
+            build_quick_script_prompt(
+                brief=brief,
+                title=project["title"],
+                genre=project["genre"],
+                style=project["style"],
+                episode_no=int(chapter["episode_no"]),
             ),
         )
         update = {
@@ -403,44 +568,6 @@ class DramaWebHandler(BaseHTTPRequestHandler):
             }
         )
 
-    def _handle_media_test(self, payload: dict[str, Any]) -> None:
-        raw_provider = payload.get("provider_config")
-        category = _optional_text(raw_provider, "category", "image") if isinstance(raw_provider, dict) else "image"
-        provider = _resolve_media_provider(
-            raw_provider,
-            task_type="video" if category == "video" else "frame_image",
-            environment_url="",
-            environment_key="",
-        )
-        self._send_json({"ok": True, "category": provider["category"], **self.media_runner.test_connection(provider)})
-
-    def _handle_task_create(
-        self, user_id: str, project_id: str, chapter_id: str, payload: dict[str, Any]
-    ) -> None:
-        task_type = _required_text(payload, "type")
-        if task_type not in {"frame_image", "video", "merge", "asset_image"}:
-            raise ValueError("任务类型必须是 frame_image、video、merge 或 asset_image。")
-        provider_config: dict[str, str] | None = None
-        if task_type in {"frame_image", "asset_image", "video"}:
-            provider_config = _resolve_media_provider(
-                payload.get("provider_config"),
-                task_type=task_type,
-                environment_url="",
-                environment_key="",
-            )
-        stored_payload = {
-            key: value for key, value in payload.items() if key != "provider_config"
-        }
-        task = self.store.create_task(
-            user_id, project_id, chapter_id, task_type, stored_payload
-        )
-        self.media_runner.submit(
-            {**task, "user_id": user_id, "payload": stored_payload},
-            provider_config,
-        )
-        task["message"] = "已交给本地媒体引擎处理"
-        self._send_json({"task": task})
-
     def _handle_prompt_document(self, user_id: str, project_id: str, chapter_id: str) -> None:
         project = self.store.get_project(user_id, project_id)
         chapter = self.store.get_chapter(user_id, project_id, chapter_id)
@@ -455,6 +582,35 @@ class DramaWebHandler(BaseHTTPRequestHandler):
             "Content-Type",
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         )
+        self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{encoded_filename}")
+        self.send_header("Content-Length", str(len(content)))
+        self.end_headers()
+        self.wfile.write(content)
+
+    def _handle_script_document(self, user_id: str, project_id: str, chapter_id: str) -> None:
+        project = self.store.get_project(user_id, project_id)
+        chapter = self.store.get_chapter(user_id, project_id, chapter_id)
+        content = _build_script_document(project, chapter)
+        filename = f"{project['title']}-{chapter['title']}-剧本.docx"
+        encoded_filename = quote(filename)
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{encoded_filename}")
+        self.send_header("Content-Length", str(len(content)))
+        self.end_headers()
+        self.wfile.write(content)
+
+    def _handle_production_archive(self, user_id: str, project_id: str, chapter_id: str) -> None:
+        project = self.store.get_project(user_id, project_id)
+        chapter = self.store.get_chapter(user_id, project_id, chapter_id)
+        production = chapter.get("production")
+        if not isinstance(production, dict):
+            raise ValueError("请先生成制作包，再一键导出剧本和分镜。")
+        content = _build_production_archive(project, chapter, production)
+        filename = f"{project['title']}-{chapter['title']}-剧本和分镜.zip"
+        encoded_filename = quote(filename)
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/zip")
         self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{encoded_filename}")
         self.send_header("Content-Length", str(len(content)))
         self.end_headers()
@@ -605,6 +761,43 @@ def _build_prompt_document(
     return buffer.getvalue()
 
 
+def _build_script_document(project: dict[str, Any], chapter: dict[str, Any]) -> bytes:
+    """Render the saved chapter as a portable Word screenplay document."""
+    document = Document()
+    document.add_heading(str(project.get("title") or "短剧项目"), level=0)
+    document.add_heading(str(chapter.get("title") or "章节剧本"), level=1)
+    outline = str(chapter.get("outline") or "").strip()
+    if outline:
+        document.add_heading("本章梗概", level=2)
+        document.add_paragraph(outline)
+    document.add_heading("剧本正文", level=2)
+    content = str(chapter.get("content") or "").strip()
+    for paragraph in content.splitlines():
+        document.add_paragraph(paragraph)
+    buffer = io.BytesIO()
+    document.save(buffer)
+    return buffer.getvalue()
+
+
+def _build_production_archive(
+    project: dict[str, Any], chapter: dict[str, Any], production: dict[str, Any]
+) -> bytes:
+    """Package the screenplay and storyboard prompt documents into one download."""
+    project_title = str(project.get("title") or "短剧项目")
+    chapter_title = str(chapter.get("title") or "章节")
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            f"{project_title}-{chapter_title}-剧本.docx",
+            _build_script_document(project, chapter),
+        )
+        archive.writestr(
+            f"{project_title}-{chapter_title}-分镜提示词.docx",
+            _build_prompt_document(project, chapter, production),
+        )
+    return buffer.getvalue()
+
+
 def _append_prompt_section(document: Document, title: str, items: object, prompt_key: str) -> None:
     document.add_heading(title, level=1)
     if not isinstance(items, list) or not items:
@@ -705,6 +898,28 @@ def _extract_pdf_text(raw: bytes, mode: str = "auto") -> str:
     return extract_scanned_script(raw, ".pdf")
 
 
+def _offline_quick_script(brief: str, title: str) -> dict[str, str]:
+    content = f"""第1集
+1-1 夜 外 主场景
+道具：关键线索（待确认）
+出场人物：主角（待命名）
+
+△ 【开场特写·快速推近】关键线索骤然闯入画面，环境声瞬间收紧；主角猛地停步，视线锁住前方。
+△ 【中景跟拍】主角向线索靠近 → 伸手前短暂停顿 → 环顾四周，呼吸变得急促。
+主角（内心独白）：这件事不该出现在这里。
+△ 【近景微推】线索揭示与“{brief}”直接相关的异常，主角眼神由怀疑转为警觉。
+△ 【反应特写】远处传来脚步声，主角迅速收起线索并转身，身体挡住关键物。
+神秘人（画外音）：既然看见了，就别想当作什么都没发生。
+△ 【低机位拉远】主角与黑暗中的来人形成对峙，冷光切开画面，风声与脚步声叠加。
+△ 【结尾定格】神秘人抬手指向主角身后；主角回头，瞳孔骤缩，画面停在即将揭晓的瞬间。
+"""
+    return {
+        "title": "第 1 集 · 线索出现",
+        "outline": f"围绕“{brief}”直接制造冲突，主角发现异常线索，并在结尾遭遇新的威胁。",
+        "content": content,
+    }
+
+
 def run_server(host: str, port: int, offline_demo: bool) -> None:
     if not (WEB_ROOT / "index.html").is_file():
         raise RuntimeError(f"找不到 Web 页面目录：{WEB_ROOT}")
@@ -772,46 +987,6 @@ def _client_base_url(client: Any) -> str:
     if hasattr(client, "proxy_base_url"):
         return str(client.proxy_base_url)
     return ""
-
-
-def _resolve_media_provider(
-    provider: object,
-    *,
-    task_type: str,
-    environment_url: str,
-    environment_key: str,
-) -> dict[str, str]:
-    category = "video" if task_type == "video" else "image"
-    if provider is None:
-        if not environment_url.strip():
-            raise TaskQueueError(f"请先在模型配置中心启用一个{category}服务商。")
-        return {
-            "category": category,
-            "provider": "compatible",
-            "api_url": environment_url.strip(),
-            "api_key": environment_key.strip(),
-            "model": "",
-        }
-    if not isinstance(provider, dict):
-        raise ValueError("provider_config 必须是对象。")
-    provider_category = _optional_text(provider, "category", category)
-    if provider_category != category:
-        raise ValueError(f"当前任务需要 {category} 配置，不能使用 {provider_category} 配置。")
-    provider_id = _optional_text(provider, "provider", "compatible")
-    allowed_providers = {"image": {"openai_image", "compatible"}, "video": {"openai_sora", "compatible"}}
-    if provider_id not in allowed_providers[category]:
-        raise ValueError(f"{category}服务商选择无效。")
-    api_key = _required_text(provider, "api_key")
-    api_url = _optional_text(provider, "api_url", "")
-    if provider_id == "compatible" and not api_url:
-        raise ValueError("兼容接口需要填写 API 地址。")
-    return {
-        "category": category,
-        "provider": provider_id,
-        "api_url": api_url,
-        "api_key": api_key,
-        "model": _required_text(provider, "model"),
-    }
 
 
 def _compact_provider_detail(detail: str) -> str:

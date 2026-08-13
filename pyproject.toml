@@ -4,11 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ai-drama-agent"
-version = "0.1.0"
+version = "0.3.0"
 description = "饺子短剧：AI 剧本、资产和分镜提示词创作工作台"
 requires-python = ">=3.11"
 dependencies = [
-  "imageio-ffmpeg>=0.6",
   "numpy>=1.26",
   "Pillow>=10.0",
   "pypdf>=6.0",

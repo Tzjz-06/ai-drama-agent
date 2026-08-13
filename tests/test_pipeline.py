@@ -19,6 +19,13 @@ class PipelineTests(unittest.TestCase):
         self.assertGreaterEqual(len(project.shots), 2)
         self.assertEqual(project.metadata["generation_mode"], "offline-rule-based")
         self.assertFalse(project.continuity_issues)
+        self.assertIn("角色四视图", project.characters[0].turnaround_prompt)
+        self.assertIn("纯白背景", project.characters[0].turnaround_prompt)
+        self.assertIn("无人物", project.scenes[0].environment_prompt)
+        self.assertIn("Seedance 2.0", project.shots[0].video_prompt)
+        self.assertIn("时间轴", project.shots[0].video_prompt)
+        self.assertIn("不生成音乐", project.shots[0].video_prompt)
+        self.assertIn("不要生成任何字幕", project.shots[0].video_prompt)
 
         with tempfile.TemporaryDirectory() as directory:
             write_outputs(project, Path(directory))
