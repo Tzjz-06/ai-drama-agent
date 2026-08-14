@@ -26,13 +26,10 @@ from .models import (
     StoryBible,
 )
 from .prompts import (
-    SYSTEM_PROMPT,
-    build_analysis_prompt,
     build_asset_extraction_prompt,
-    build_render_prompt,
 )
 
-ASSET_RECOVERY_SYSTEM_PROMPT = (
+ASSET_EXTRACTION_SYSTEM_PROMPT = (
     "你是中文短剧故事资产提取器。只返回合法 JSON，不要解释，不要输出 Markdown。"
 )
 
@@ -45,25 +42,11 @@ class DramaAgent:
 
     def run(self, script: str, options: GenerationOptions) -> DramaProject:
         client = self.client or OpenAICompatibleClient.from_environment()
-        try:
-            raw = client.complete_json(
-                SYSTEM_PROMPT,
-                build_analysis_prompt(
-                    script,
-                    options.title,
-                    options.visual_style,
-                    options.aspect_ratio,
-                    options.fps,
-                    options.target_model,
-                ),
-            )
+        if isinstance(client, RuleBasedClient):
+            raw = build_rule_based_analysis(script, options.title, options.visual_style)
             project = self._project_from_dict(script, options, raw)
-            checked = client.complete_json(SYSTEM_PROMPT, build_render_prompt(project.to_dict()))
-            project = self._project_from_dict(script, options, checked)
-        except RuntimeError as error:
-            if isinstance(client, RuleBasedClient) or not _is_retryable_generation_error(str(error)):
-                raise
-            project = self._run_timeout_recovery(script, options, client, error)
+        else:
+            project = self._run_asset_pipeline(script, options, client)
         project.metadata.update(
             {
                 "generation_mode": (
@@ -77,31 +60,25 @@ class DramaAgent:
         project.continuity_issues.extend(self._validate(project))
         return project
 
-    def _run_timeout_recovery(
+    def _run_asset_pipeline(
         self,
         script: str,
         options: GenerationOptions,
         client: LLMClient,
-        original_error: RuntimeError,
     ) -> DramaProject:
-        try:
-            asset_data = client.complete_json(
-                ASSET_RECOVERY_SYSTEM_PROMPT,
-                build_asset_extraction_prompt(
-                    script,
-                    options.title,
-                    options.visual_style,
-                    options.aspect_ratio,
-                    options.fps,
-                ),
-            )
-        except RuntimeError as recovery_error:
-            raise RuntimeError(
-                f"{original_error} 轻量资产重试仍失败：{recovery_error}"
-            ) from recovery_error
+        asset_data = client.complete_json(
+            ASSET_EXTRACTION_SYSTEM_PROMPT,
+            build_asset_extraction_prompt(
+                script,
+                options.title,
+                options.visual_style,
+                options.aspect_ratio,
+                options.fps,
+            ),
+        )
 
         local_data = build_rule_based_analysis(script, options.title, options.visual_style)
-        merged = _merge_timeout_recovery_payload(local_data, asset_data, str(original_error))
+        merged = _merge_asset_pipeline_payload(local_data, asset_data)
         return self._project_from_dict(script, options, merged)
 
     def _project_from_dict(
@@ -575,22 +552,9 @@ def render_continuity_report(project: DramaProject) -> str:
     return "\n".join(lines)
 
 
-def _is_retryable_generation_error(message: str) -> bool:
-    lowered = message.lower()
-    markers = (
-        "http 522",
-        "http 524",
-        "处理超时",
-        "远端提前断开",
-        "remote end closed connection without response",
-    )
-    return any(marker in lowered for marker in markers)
-
-
-def _merge_timeout_recovery_payload(
+def _merge_asset_pipeline_payload(
     local_data: dict[str, Any],
     asset_data: dict[str, Any],
-    original_error: str,
 ) -> dict[str, Any]:
     merged_metadata: dict[str, Any] = {}
     if isinstance(local_data.get("metadata"), dict):
@@ -600,8 +564,7 @@ def _merge_timeout_recovery_payload(
     merged_metadata.update(
         {
             "generation_mode": "llm-assets-local-shots",
-            "recovery_reason": original_error,
-            "recovery_strategy": "asset-only-llm + local-shot-synthesis",
+            "generation_strategy": "asset-only-llm + local-shot-synthesis",
         }
     )
     return {

@@ -10,6 +10,7 @@ $distRoot = Join-Path $projectRoot "dist"
 $buildRoot = Join-Path $projectRoot "build"
 $portableRoot = Join-Path $outputRoot "FrameForgeStudio"
 $installerScript = Join-Path $projectRoot "installer\FrameForgeStudio.iss"
+$appIcon = Join-Path $projectRoot "installer\jiaozi-creation-studio.ico"
 
 Push-Location (Join-Path $projectRoot "frontend")
 npm.cmd run build
@@ -36,7 +37,7 @@ function Get-InnoSetupCompiler {
   ) | Where-Object { $_ -and (Test-Path $_) }
 
   if ($candidates.Count -gt 0) {
-    return $candidates[0]
+    return @($candidates)[0]
   }
 
   $registryKeys = @(
@@ -75,8 +76,10 @@ python -m PyInstaller `
   --windowed `
   --onedir `
   --name FrameForgeStudio `
+  --icon "$appIcon" `
   --paths "$projectRoot\src" `
   --add-data "$projectRoot\web;web" `
+  --add-data "$appIcon;." `
   --collect-all imageio_ffmpeg `
   --exclude-module PyQt5 `
   --exclude-module PyQt6 `
@@ -101,6 +104,7 @@ $iscc = Get-InnoSetupCompiler
   "/DAppVersion=$appVersion" `
   "/DSourceDir=$portableRoot" `
   "/DOutputDir=$outputRoot" `
+  "/DIconFile=$appIcon" `
   $installerScript
 if ($LASTEXITCODE -ne 0) {
   throw "Inno Setup compile failed with exit code $LASTEXITCODE"

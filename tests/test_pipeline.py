@@ -51,18 +51,16 @@ class PipelineTests(unittest.TestCase):
         self.assertNotEqual(first_project.shots[0].video_prompt, second_project.shots[0].video_prompt)
         self.assertNotEqual(first_project.scenes[0].name, second_project.scenes[0].name)
 
-    def test_timeout_recovery_uses_model_assets_and_local_shots(self) -> None:
+    def test_online_pipeline_uses_one_asset_request_and_local_shots(self) -> None:
         prompts: list[str] = []
 
-        class FakeRetryClient:
+        class FakeAssetClient:
             def __init__(self) -> None:
                 self.calls = 0
 
             def complete_json(self, system_prompt: str, user_prompt: str) -> dict[str, object]:
                 self.calls += 1
                 prompts.append(user_prompt)
-                if self.calls == 1:
-                    raise RuntimeError("模型接口返回 HTTP 524。")
                 return {
                     "story_bible": {
                         "logline": "病弱皇子借退婚风波翻盘。",
@@ -120,7 +118,8 @@ class PipelineTests(unittest.TestCase):
             "苏清颜闯入退婚，当众羞辱。"
             "萧晨起身反击，提出道歉与赔罪条件。"
         )
-        project = build_default_agent(client=FakeRetryClient()).run(
+        client = FakeAssetClient()
+        project = build_default_agent(client=client).run(
             script,
             GenerationOptions(title="退婚反击", visual_style="电影感二维国漫"),
         )
@@ -129,9 +128,9 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(project.story_bible.genre, "古装权谋")
         self.assertGreaterEqual(len(project.shots), 1)
         self.assertTrue(project.shots[0].video_prompt)
-        self.assertIn("recovery_reason", project.metadata)
-        self.assertGreaterEqual(len(prompts), 2)
-        self.assertIn("只提取故事与资产", prompts[1])
+        self.assertEqual(client.calls, 1)
+        self.assertEqual(len(prompts), 1)
+        self.assertIn("只提取故事与资产", prompts[0])
 
 
 if __name__ == "__main__":

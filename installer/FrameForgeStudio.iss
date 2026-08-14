@@ -1,6 +1,6 @@
 #define MyAppId "{{6F628B0F-DA54-4904-9A65-BAA5A3F4C95A}}"
-#define MyAppName "FrameForge Studio"
-#define MyAppPublisher "FrameForge"
+#define MyAppName "饺子创作台"
+#define MyAppPublisher "饺子创作台"
 
 #ifndef AppVersion
   #define AppVersion "0.1.0"
@@ -23,7 +23,7 @@ DefaultDirName={localappdata}\Programs\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir={#OutputDir}
-OutputBaseFilename=FrameForgeStudio-Setup-{#AppVersion}
+OutputBaseFilename=饺子创作台-Setup-{#AppVersion}
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
@@ -36,6 +36,9 @@ SetupLogging=yes
 VersionInfoVersion={#AppVersion}
 ChangesAssociations=no
 CloseApplications=yes
+#ifdef IconFile
+SetupIconFile={#IconFile}
+#endif
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -51,4 +54,4 @@ Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\FrameForgeStudio.exe"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\FrameForgeStudio.exe"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\FrameForgeStudio.exe"; Description: "Launch FrameForge Studio"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\FrameForgeStudio.exe"; Description: "启动饺子创作台"; Flags: nowait postinstall skipifsilent

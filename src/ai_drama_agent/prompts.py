@@ -43,6 +43,18 @@ content 必须满足：
 5. 每个镜头可拆为 2-5 秒，整集可供 Seedance 时间轴继续拆解。
 6. 不解释创作过程，不返回 Markdown 代码围栏。"""
 
+NOVEL_CHAPTER_SYSTEM_PROMPT = """你是饺子网文的连载续写引擎。
+只返回 JSON 对象，字段为 title、outline、content，不要 Markdown 代码围栏或解释。
+content 必须是可直接进入网文正文的连续叙事，不写分镜、镜头、场次或制作分析。
+必须承接上一章已经发生的事件、人物关系、设定和结尾状态，推进新的冲突、爽点或情绪钩子；
+不得重复上一章，不得凭空改写人物身份和世界规则。"""
+
+JUBENSHA_CHAPTER_SYSTEM_PROMPT = """你是饺子剧本杀的幕正文续写引擎。
+只返回 JSON 对象，字段为 title、outline、content，不要 Markdown 代码围栏或解释。
+content 必须是可直接用于剧本杀制作的完整一幕正文，不写影视分镜，不写空泛概况。
+要承接上一幕已公开的信息、角色关系、隐藏动机和未解决矛盾，写出可供 DM 组织和玩家阅读的剧情推进、
+现场行动、对话、证物投放或关系压力；不能只给框架，不能替玩家擅自公开不该公开的真相。"""
+
 
 def build_quick_script_prompt(
     brief: str,
@@ -50,14 +62,58 @@ def build_quick_script_prompt(
     genre: str,
     style: str,
     episode_no: int = 1,
+    previous_context: str = "",
 ) -> str:
+    continuity_context = ""
+    if previous_context.strip():
+        continuity_context = f"""
+上一集连续性上下文：
+---
+{previous_context.strip()}
+---
+
+必须承接上一集已经发生的事件、人物关系和结尾状态，不要重复上一集剧情，不要重置角色状态。
+"""
     return f"""项目：{title}
 题材：{genre}
 视觉风格：{style}
 章节：第 {episode_no} 集
 一句话创意：{brief}
+{continuity_context}
 
 请直接扩写完整剧本，不要先等待大纲确认。title 使用适合这一集的标题；outline 概括本集核心冲突、反转和结尾钩子；content 输出完整 `△` 格式章节剧本。"""
+
+
+def build_chapter_continuation_prompt(
+    brief: str,
+    title: str,
+    genre: str,
+    style: str,
+    episode_no: int,
+    unit_label: str,
+    previous_context: str = "",
+) -> str:
+    continuity_context = ""
+    if previous_context.strip():
+        continuity_context = f"""
+上一{unit_label}连续性上下文：
+---
+{previous_context.strip()}
+---
+
+必须承接上一{unit_label}已经发生的事件、人物关系和结尾状态，不要重复上一{unit_label}内容，不要重置角色状态。
+"""
+    return f"""产品：{"网文" if unit_label == "章" else "剧本杀"}
+项目：{title}
+题材：{genre}
+风格：{style}
+章节：第 {episode_no} {unit_label}
+本{unit_label}剧情方向：{brief}
+{continuity_context}
+
+请直接完成第 {episode_no} {unit_label}的正文续写。
+title 使用适合本{unit_label}的标题；outline 概括本{unit_label}推进的冲突和结尾状态；
+content 输出完整正文，不能只输出概况、提纲或写作建议。"""
 
 
 def build_analysis_prompt(
