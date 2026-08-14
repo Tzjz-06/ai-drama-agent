@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('D:\\ai-drama-agent\\web', 'web')]
+datas = [('D:\\ai-drama-agent\\web', 'web'), ('D:\\ai-drama-agent\\installer\\jiaozi-creation-studio.ico', '.')]
 binaries = []
 hiddenimports = ['PySide6.QtWebEngineWidgets', 'PySide6.QtWebEngineCore']
 tmp_ret = collect_all('imageio_ffmpeg')
@@ -39,6 +39,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=['D:\\ai-drama-agent\\installer\\jiaozi-creation-studio.ico'],
 )
 coll = COLLECT(
     exe,

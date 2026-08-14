@@ -36,8 +36,8 @@ export function createProviderConfig(): TextProviderConfig {
     is_default: false,
     mode: "manual",
     api_key: "",
-    base_url: "https://api.qlhazycoder.top/v1",
-    model: "gpt-5.4",
+    base_url: "https://api.deepseek.com",
+    model: "deepseek-v4-pro",
     reasoning_effort: "auto",
   };
 }

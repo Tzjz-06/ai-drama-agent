@@ -98,15 +98,10 @@ class OpenAICompatibleClient:
         except (TimeoutError, socket.timeout) as error:
             raise RuntimeError("模型接口连接超时，请检查 Base URL、网络或供应商服务状态。") from error
 
-        content = _extract_chat_completion_text(body)
-        content = _strip_json_fence(content)
-        try:
-            parsed = json.loads(content)
-        except json.JSONDecodeError as error:
-            raise RuntimeError("模型未返回合法 JSON。") from error
-        if not isinstance(parsed, dict):
-            raise RuntimeError("模型返回的 JSON 顶层结构不是对象。")
-        return parsed
+        return _parse_json_object(
+            _extract_chat_completion_text(body),
+            "模型",
+        )
 
 
 @dataclass
@@ -168,15 +163,10 @@ class CCSwitchResponsesClient:
         except (TimeoutError, socket.timeout) as error:
             raise RuntimeError("CC-Switch 代理调用超时，请检查本地代理或上游供应商状态。") from error
 
-        content = _extract_responses_json_text(body)
-        content = _strip_json_fence(content)
-        try:
-            parsed = json.loads(content)
-        except json.JSONDecodeError as error:
-            raise RuntimeError("CC-Switch Responses 接口未返回合法 JSON。") from error
-        if not isinstance(parsed, dict):
-            raise RuntimeError("CC-Switch 返回的 JSON 顶层结构不是对象。")
-        return parsed
+        return _parse_json_object(
+            _extract_responses_json_text(body),
+            "CC-Switch Responses 接口",
+        )
 
 
 @dataclass
@@ -241,15 +231,10 @@ class CCSwitchChatCompletionsClient:
         except (TimeoutError, socket.timeout) as error:
             raise RuntimeError("CC-Switch 代理调用超时，请检查本地代理或上游供应商状态。") from error
 
-        content = _extract_chat_completion_text(body)
-        content = _strip_json_fence(content)
-        try:
-            parsed = json.loads(content)
-        except json.JSONDecodeError as error:
-            raise RuntimeError("CC-Switch Chat Completions 接口未返回合法 JSON。") from error
-        if not isinstance(parsed, dict):
-            raise RuntimeError("CC-Switch 返回的 JSON 顶层结构不是对象。")
-        return parsed
+        return _parse_json_object(
+            _extract_chat_completion_text(body),
+            "CC-Switch Chat Completions 接口",
+        )
 
 
 def build_cc_switch_client(
@@ -265,11 +250,47 @@ def build_cc_switch_client(
 
 
 def _strip_json_fence(content: str) -> str:
-    cleaned = content.strip()
+    cleaned = content.strip().lstrip("\ufeff")
     if cleaned.startswith("```") and cleaned.endswith("```"):
         lines = cleaned.splitlines()
         return "\n".join(lines[1:-1]).strip()
     return cleaned
+
+
+def _parse_json_object(content: str, source: str) -> dict[str, Any]:
+    cleaned = _strip_json_fence(content)
+    decoder = json.JSONDecoder(strict=False)
+    try:
+        parsed = decoder.decode(cleaned)
+    except json.JSONDecodeError as initial_error:
+        candidates: list[tuple[int, dict[str, Any]]] = []
+        for match in re.finditer(r"\{", cleaned):
+            try:
+                candidate, end = decoder.raw_decode(cleaned, match.start())
+            except json.JSONDecodeError:
+                continue
+            if isinstance(candidate, dict):
+                candidates.append((end - match.start(), candidate))
+        if candidates:
+            return max(candidates, key=lambda item: item[0])[1]
+
+        detail = f"第 {initial_error.lineno} 行第 {initial_error.colno} 列"
+        if _looks_like_truncated_json(cleaned, initial_error):
+            raise RuntimeError(
+                f"{source}返回的 JSON 内容不完整（{detail}），上游供应商可能截断了输出。"
+            ) from initial_error
+        raise RuntimeError(f"{source}未返回合法 JSON（{detail}）。") from initial_error
+    if not isinstance(parsed, dict):
+        raise RuntimeError(f"{source}返回的 JSON 顶层结构不是对象。")
+    return parsed
+
+
+def _looks_like_truncated_json(content: str, error: json.JSONDecodeError) -> bool:
+    if error.msg.startswith("Unterminated string"):
+        return True
+    if error.pos >= max(0, len(content) - 2):
+        return True
+    return content.count("{") > content.count("}") or content.count("[") > content.count("]")
 
 
 def _extract_responses_json_text(payload: dict[str, Any]) -> str:

@@ -15,7 +15,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 from PySide6.QtCore import QStandardPaths, QUrl
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QIcon
 from PySide6.QtWebEngineCore import QWebEngineDownloadRequest, QWebEnginePage
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import QApplication, QFileDialog, QMainWindow, QMessageBox, QStatusBar, QToolBar
@@ -56,7 +56,8 @@ class FrameForgeWindow(QMainWindow):
     def __init__(self, runtime: LocalWebRuntime) -> None:
         super().__init__()
         self.runtime = runtime
-        self.setWindowTitle("FrameForge Studio")
+        self.setWindowTitle("饺子创作台")
+        self.setWindowIcon(QIcon(str(_resource_path("jiaozi-creation-studio.ico"))))
         self.resize(1540, 980)
         self.setMinimumSize(1200, 760)
         self._build_toolbar()
@@ -139,7 +140,7 @@ class FrameForgeWindow(QMainWindow):
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="启动 FrameForge 桌面端。")
+    parser = argparse.ArgumentParser(description="启动饺子创作台桌面端。")
     parser.add_argument("--offline-demo", action="store_true")
     parser.add_argument("--smoke-test", action="store_true")
     parser.add_argument("--browser-preview", action="store_true")
@@ -167,6 +168,8 @@ def main() -> None:
         return
 
     app = QApplication(sys.argv)
+    app.setApplicationName("饺子创作台")
+    app.setWindowIcon(QIcon(str(_resource_path("jiaozi-creation-studio.ico"))))
     window = FrameForgeWindow(runtime)
     window.show()
     exit_code = app.exec()
@@ -188,6 +191,14 @@ def _wait_for_http(url: str, timeout_seconds: float = 12.0) -> None:
         except Exception:
             time.sleep(0.2)
     raise RuntimeError(f"桌面端内置服务启动失败：{url}")
+
+
+def _resource_path(name: str) -> Path:
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2]))
+    path = base / name
+    if path.exists():
+        return path
+    return base / "installer" / name
 
 
 if __name__ == "__main__":

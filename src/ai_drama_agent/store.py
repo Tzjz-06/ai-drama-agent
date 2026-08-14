@@ -40,6 +40,8 @@ class LocalStore:
         self._data = self._load()
         self._data.setdefault("tasks", {})
         self._data.setdefault("sessions", {})
+        if self._normalize_legacy_project_types():
+            self._save()
 
     def _migrate_legacy_state(self) -> None:
         """Copy an install-directory state file once into the user data path."""
@@ -123,17 +125,19 @@ class LocalStore:
             return [_project_summary(project) for project in sorted(projects, key=lambda item: item["updated_at"], reverse=True)]
 
     def create_project(self, user_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        title = _text(payload, "title", "未命名短剧")
+        product_type = _product_type(payload)
+        title = _text(payload, "title", _default_title(product_type))
         project_id = f"project_{secrets.token_hex(8)}"
         now = _now()
         project = {
             "id": project_id,
             "user_id": user_id,
+            "product_type": product_type,
             "title": title,
             "description": _text(payload, "description", ""),
-            "style": _text(payload, "style", "电影感二维国漫"),
-            "genre": _text(payload, "genre", "短剧"),
-            "aspect_ratio": _text(payload, "aspect_ratio", "9:16"),
+            "style": _text(payload, "style", _default_style(product_type)),
+            "genre": _text(payload, "genre", _default_genre(product_type)),
+            "aspect_ratio": _text(payload, "aspect_ratio", _default_aspect(product_type)),
             "status": "draft",
             "created_at": now,
             "updated_at": now,
@@ -168,6 +172,32 @@ class LocalStore:
                 for task_id, task in self._data["tasks"].items()
                 if task.get("project_id") != project_id
             }
+            self._save()
+
+    def delete_chapter(self, user_id: str, project_id: str, chapter_id: str) -> None:
+        """Delete one chapter and its complete production package."""
+        with self._lock:
+            project = self._owned_project(user_id, project_id)
+            self._owned_chapter(project, chapter_id)
+            project["chapters"] = [
+                chapter
+                for chapter in project["chapters"]
+                if chapter.get("id") != chapter_id
+            ]
+            self._data["tasks"] = {
+                task_id: task
+                for task_id, task in self._data["tasks"].items()
+                if not (
+                    task.get("project_id") == project_id
+                    and task.get("chapter_id") == chapter_id
+                )
+            }
+            project["status"] = (
+                "completed"
+                if any(chapter.get("status") == "completed" for chapter in project["chapters"])
+                else "draft"
+            )
+            project["updated_at"] = _now()
             self._save()
 
     def create_chapter(self, user_id: str, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -219,6 +249,34 @@ class LocalStore:
             chapter["status"] = "completed"
             chapter["updated_at"] = _now()
             project["status"] = "completed"
+            project["updated_at"] = chapter["updated_at"]
+            self._save()
+            return dict(chapter)
+
+    def update_production_package(
+        self,
+        user_id: str,
+        project_id: str,
+        chapter_id: str,
+        production: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not isinstance(production, dict):
+            raise ValueError("制作包数据格式不正确。")
+        package_type = str(production.get("type") or "").strip()
+        if package_type not in {"novel_package", "jubensha_package"}:
+            raise ValueError("只支持编辑网文或剧本杀制作包。")
+
+        with self._lock:
+            project = self._owned_project(user_id, project_id)
+            chapter = self._owned_chapter(project, chapter_id)
+            current = chapter.get("production")
+            if not isinstance(current, dict):
+                raise StoreError("当前章节还没有可编辑的制作包。")
+            current_type = str(current.get("type") or "").strip()
+            if current_type != package_type:
+                raise ValueError("制作包类型不匹配。")
+            chapter["production"] = production
+            chapter["updated_at"] = _now()
             project["updated_at"] = chapter["updated_at"]
             self._save()
             return dict(chapter)
@@ -329,6 +387,18 @@ class LocalStore:
             raise StoreError("本地数据文件结构损坏，请备份后删除 data/app_state.json。")
         return data
 
+    def _normalize_legacy_project_types(self) -> bool:
+        """Correct projects created before product type was persisted reliably."""
+        changed = False
+        for project in self._data["projects"].values():
+            if not isinstance(project, dict) or project.get("product_type") != "drama":
+                continue
+            inferred_type = _infer_legacy_product_type(project)
+            if inferred_type != "drama":
+                project["product_type"] = inferred_type
+                changed = True
+        return changed
+
     def _save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temp_path = self.path.with_suffix(".tmp")
@@ -365,6 +435,62 @@ def _text(payload: dict[str, Any], key: str, default: str) -> str:
     return value.strip() if isinstance(value, str) and value.strip() else default
 
 
+def _product_type(payload: dict[str, Any]) -> str:
+    value = payload.get("product_type")
+    if not isinstance(value, str):
+        return "drama"
+    normalized = value.strip().lower()
+    return normalized if normalized in {"drama", "novel", "jubensha"} else "drama"
+
+
+def _infer_legacy_product_type(project: dict[str, Any]) -> str:
+    style = _text(project, "style", "")
+    genre = _text(project, "genre", "")
+    aspect_ratio = _text(project, "aspect_ratio", "")
+
+    if (
+        aspect_ratio == "6人 / 4小时"
+        or style in {"沉浸式盒装本", "圆桌还原本", "暗场搜证", "民国旧案"}
+        or genre in {"还原推理", "情感还原", "机制阵营", "欢乐推理", "民国悬疑"}
+    ):
+        return "jubensha"
+    if (
+        aspect_ratio == "长篇连载"
+        or style in {"移动端爽文", "精品群像", "小白快节奏", "古风细腻", "悬疑强反转"}
+        or genre in {"都市爽文", "古言甜宠", "悬疑推理", "玄幻升级", "校园青春", "网文"}
+    ):
+        return "novel"
+    return "drama"
+
+
+def _default_title(product_type: str) -> str:
+    return {
+        "novel": "未命名网文",
+        "jubensha": "未命名剧本杀",
+    }.get(product_type, "未命名短剧")
+
+
+def _default_style(product_type: str) -> str:
+    return {
+        "novel": "移动端爽文",
+        "jubensha": "沉浸式盒装本",
+    }.get(product_type, "电影感二维国漫")
+
+
+def _default_genre(product_type: str) -> str:
+    return {
+        "novel": "网文",
+        "jubensha": "还原推理",
+    }.get(product_type, "短剧")
+
+
+def _default_aspect(product_type: str) -> str:
+    return {
+        "novel": "长篇连载",
+        "jubensha": "6人 / 4小时",
+    }.get(product_type, "9:16")
+
+
 def _project_summary(project: dict[str, Any]) -> dict[str, Any]:
     chapters = project.get("chapters", [])
     latest = chapters[-1] if chapters else None
@@ -373,11 +499,17 @@ def _project_summary(project: dict[str, Any]) -> dict[str, Any]:
         key: project[key]
         for key in ("id", "title", "description", "style", "genre", "aspect_ratio", "status", "created_at", "updated_at")
     } | {
+        "product_type": str(project.get("product_type") or "drama"),
         "chapter_count": len(chapters),
         "latest_chapter_title": latest.get("title", "") if latest else "",
         "character_count": len(production.get("characters", [])) if isinstance(production, dict) else 0,
         "scene_count": len(production.get("scenes", [])) if isinstance(production, dict) else 0,
         "shot_count": len(production.get("shots", [])) if isinstance(production, dict) else 0,
+        "novel_stage_count": len(production.get("stages", [])) if isinstance(production, dict) else 0,
+        "novel_word_count": int(production.get("word_count", 0)) if isinstance(production, dict) else 0,
+        "jubensha_role_count": len(production.get("roles", [])) if isinstance(production, dict) else 0,
+        "jubensha_clue_count": len(production.get("clues", [])) if isinstance(production, dict) else 0,
+        "jubensha_round_count": len(production.get("rounds", [])) if isinstance(production, dict) else 0,
     }
 
 
