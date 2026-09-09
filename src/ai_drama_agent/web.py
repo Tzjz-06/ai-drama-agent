@@ -1096,22 +1096,6 @@ class DramaWebHandler(BaseHTTPRequestHandler):
                 )
             raise
 
-    def _handle_novel_generate(
-        self, user_id: str, project_id: str, chapter_id: str, payload: dict[str, Any]
-    ) -> None:
-        saved_chapter, normalized = self._generate_novel_package(
-            user_id, project_id, chapter_id, payload
-        )
-        self._send_json({"chapter": saved_chapter, "novel_package": normalized})
-
-    def _handle_jubensha_generate(
-        self, user_id: str, project_id: str, chapter_id: str, payload: dict[str, Any]
-    ) -> None:
-        saved_chapter, normalized = self._generate_jubensha_package(
-            user_id, project_id, chapter_id, payload
-        )
-        self._send_json({"chapter": saved_chapter, "jubensha_package": normalized})
-
     def _handle_chapter_draft(
         self, user_id: str, project_id: str, chapter_id: str, payload: dict[str, Any]
     ) -> None:
