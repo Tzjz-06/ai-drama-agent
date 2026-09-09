@@ -123,7 +123,10 @@ class WebTests(unittest.TestCase):
                 user["id"],
                 project["id"],
                 chapter["id"],
-                {"source_text": "落魄程序员重生高考前。"},
+                {
+                    "source_text": "落魄程序员重生高考前。",
+                    "progress_id": "novel-package-progress",
+                },
             )
 
             package = response["novel_package"]
@@ -138,6 +141,9 @@ class WebTests(unittest.TestCase):
             self.assertIn("chapter_text", package)
             self.assertEqual(saved["production"]["type"], "novel_package")
             self.assertEqual(store.list_projects(user["id"])[0]["novel_stage_count"], 6)
+            progress = handler._get_quick_progress("novel", "novel-package-progress")
+            self.assertEqual(progress["status"], "completed")
+            self.assertEqual(progress["percent"], 100)
 
     def test_jubensha_generate_distills_round_table_package(self) -> None:
         from ai_drama_agent.store import LocalStore
@@ -171,6 +177,7 @@ class WebTests(unittest.TestCase):
                     "source_text": "六个旧友在闭馆钟楼重聚，桌上出现一封写给死者的邀请函。",
                     "player_count": "5人",
                     "duration": "3小时",
+                    "progress_id": "jubensha-package-progress",
                 },
             )
 
@@ -192,6 +199,43 @@ class WebTests(unittest.TestCase):
             self.assertGreaterEqual(summary["jubensha_role_count"], 1)
             self.assertGreaterEqual(summary["jubensha_clue_count"], 1)
             self.assertGreaterEqual(summary["jubensha_round_count"], 1)
+            progress = handler._get_quick_progress("jubensha", "jubensha-package-progress")
+            self.assertEqual(progress["status"], "completed")
+            self.assertEqual(progress["percent"], 100)
+
+    def test_drama_generate_records_package_progress(self) -> None:
+        from ai_drama_agent.store import LocalStore
+        from ai_drama_agent.web import DramaWebHandler
+
+        class FakeProduction:
+            metadata = {"generation_mode": "test"}
+
+            @staticmethod
+            def to_dict() -> dict[str, object]:
+                return {"title": "测试制作包", "characters": [], "scenes": [], "shots": []}
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = LocalStore(Path(directory) / "app_state.json")
+            user = store.register("drama-package", "", "secret123")
+            project = store.create_project(user["id"], {"title": "测试短剧"})
+            chapter = store.create_chapter(user["id"], project["id"], {"title": "第一集"})
+            handler = object.__new__(DramaWebHandler)
+            handler.store = store
+            handler._run_generation = lambda payload: (FakeProduction(), {})
+            response: dict[str, object] = {}
+            handler._send_json = response.update
+
+            handler._handle_project_generate(
+                user["id"],
+                project["id"],
+                chapter["id"],
+                {"progress_id": "drama-package-progress"},
+            )
+
+            self.assertEqual(response["chapter"]["production"]["title"], "测试制作包")
+            progress = handler._get_quick_progress("drama", "drama-package-progress")
+            self.assertEqual(progress["status"], "completed")
+            self.assertEqual(progress["percent"], 100)
 
     def test_quick_progress_is_isolated_by_user_and_records_completion(self) -> None:
         from ai_drama_agent.web import DramaWebHandler
@@ -565,6 +609,32 @@ class WebTests(unittest.TestCase):
         text = "\n".join(paragraph.text for paragraph in document.paragraphs)
         for expected in ("角色提示词", "场景提示词", "道具提示词", "首帧提示词", "视频提示词", "尾帧提示词", "负面提示词"):
             self.assertIn(expected, text)
+
+    def test_prompt_document_exports_canonical_material_map_prompts(self) -> None:
+        from docx import Document
+
+        from ai_drama_agent.web import _build_prompt_document
+
+        content = _build_prompt_document(
+            {"title": "资产一致性", "style": "电影感国漫"},
+            {"episode_no": 1, "title": "第一集"},
+            {
+                "characters": [{"name": "林默", "turnaround_prompt": "旧的角色简写"}],
+                "scenes": [{"name": "办公室", "environment_prompt": "旧的场景简写"}],
+                "props": [{"name": "信封", "description": "旧的道具简写"}],
+                "material_map": [
+                    {"id": "C001", "type": "角色资产", "prompt": "资产编号：C001。完整角色提示词"},
+                    {"id": "S001", "type": "场景资产", "prompt": "资产编号：S001。完整场景提示词"},
+                    {"id": "P001", "type": "道具资产", "prompt": "资产编号：P001。完整道具提示词"},
+                ],
+                "shots": [],
+            },
+        )
+        text = "\n".join(paragraph.text for paragraph in Document(io.BytesIO(content)).paragraphs)
+        for expected in ("C001", "S001", "P001", "完整角色提示词", "完整场景提示词", "完整道具提示词"):
+            self.assertIn(expected, text)
+        for stale in ("旧的角色简写", "旧的场景简写", "旧的道具简写"):
+            self.assertNotIn(stale, text)
 
     def test_chat_completion_text_supports_common_relay_shapes(self) -> None:
         from ai_drama_agent.llm import _extract_chat_completion_text

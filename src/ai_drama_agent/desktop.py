@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import os
 import socket
 import sys
@@ -14,13 +15,23 @@ from dataclasses import dataclass
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
-from PySide6.QtCore import QStandardPaths, QUrl
-from PySide6.QtGui import QAction, QIcon
+from PySide6.QtCore import QCoreApplication, QStandardPaths, Qt, QUrl
+from PySide6.QtGui import QColor, QIcon
 from PySide6.QtWebEngineCore import QWebEngineDownloadRequest, QWebEnginePage
 from PySide6.QtWebEngineWidgets import QWebEngineView
-from PySide6.QtWidgets import QApplication, QFileDialog, QMainWindow, QMessageBox, QStatusBar, QToolBar
+from PySide6.QtWidgets import QApplication, QFileDialog, QMainWindow
 
 from ai_drama_agent.web import DramaWebHandler
+
+
+def _configure_stable_web_rendering() -> None:
+    """Avoid GPU-compositor artifacts in the embedded Chromium view."""
+    required_flags = ("--disable-gpu", "--disable-gpu-compositing")
+    existing_flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "").split()
+    os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = " ".join(
+        [*existing_flags, *(flag for flag in required_flags if flag not in existing_flags)]
+    )
+    QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_UseSoftwareOpenGL)
 
 
 @dataclass
@@ -58,42 +69,19 @@ class FrameForgeWindow(QMainWindow):
         self.runtime = runtime
         self.setWindowTitle("饺子创作台")
         self.setWindowIcon(QIcon(str(_resource_path("jiaozi-creation-studio.ico"))))
+        self.setStyleSheet(
+            """
+            QMainWindow { background: #111316; }
+            """
+        )
         self.resize(1540, 980)
         self.setMinimumSize(1200, 760)
-        self._build_toolbar()
-        self._build_statusbar()
         self.browser = QWebEngineView(self)
+        self.browser.page().setBackgroundColor(QColor("#111316"))
         self.browser.page().featurePermissionRequested.connect(self._handle_feature_permission)
         self.browser.page().profile().downloadRequested.connect(self._handle_download)
         self.browser.setUrl(QUrl(runtime.url))
         self.setCentralWidget(self.browser)
-        self.statusBar().showMessage(
-            "离线推理模式" if runtime.mode == "offline-rule-based" else "真实模型模式"
-        )
-
-    def _build_toolbar(self) -> None:
-        toolbar = QToolBar("Main", self)
-        toolbar.setMovable(False)
-        toolbar.setFloatable(False)
-        self.addToolBar(toolbar)
-
-        reload_action = QAction("刷新", self)
-        reload_action.triggered.connect(self._reload)
-        toolbar.addAction(reload_action)
-
-        browser_action = QAction("浏览器打开", self)
-        browser_action.triggered.connect(self._open_in_browser)
-        toolbar.addAction(browser_action)
-
-    def _build_statusbar(self) -> None:
-        status = QStatusBar(self)
-        self.setStatusBar(status)
-
-    def _reload(self) -> None:
-        self.browser.reload()
-
-    def _open_in_browser(self) -> None:
-        webbrowser.open(self.runtime.url)
 
     def _handle_feature_permission(self, origin: QUrl, feature: QWebEnginePage.Feature) -> None:
         if feature == QWebEnginePage.Feature.ClipboardReadWrite:
@@ -118,7 +106,6 @@ class FrameForgeWindow(QMainWindow):
             )
             if not selected_path:
                 download.cancel()
-                self.statusBar().showMessage("已取消导出", 3000)
                 return
             destination = Path(selected_path)
             if destination.suffix.lower() != suffix:
@@ -126,13 +113,11 @@ class FrameForgeWindow(QMainWindow):
             download.setDownloadDirectory(str(destination.parent))
             download.setDownloadFileName(destination.name)
             download.accept()
-            self.statusBar().showMessage(f"正在导出：{destination.name}", 5000)
             return
         download.setDownloadDirectory(
             QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DownloadLocation)
         )
         download.accept()
-        self.statusBar().showMessage(f"已开始下载：{download.downloadFileName()}", 5000)
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
         self.runtime.shutdown()
@@ -167,13 +152,36 @@ def main() -> None:
             runtime.shutdown()
         return
 
+    _configure_stable_web_rendering()
     app = QApplication(sys.argv)
     app.setApplicationName("饺子创作台")
     app.setWindowIcon(QIcon(str(_resource_path("jiaozi-creation-studio.ico"))))
     window = FrameForgeWindow(runtime)
+    _apply_windows_chrome(window)
     window.show()
     exit_code = app.exec()
     sys.exit(exit_code)
+
+
+def _apply_windows_chrome(window: QMainWindow) -> None:
+    """Match the native Windows title bar to the studio surface color."""
+    if sys.platform != "win32":
+        return
+    try:
+        hwnd = ctypes.c_void_p(int(window.winId()))
+        dwmapi = ctypes.windll.dwmapi
+        for attribute, color in (
+            (34, 0x161311),  # DWMWA_BORDER_COLOR, #111316 in COLORREF order
+            (35, 0x161311),  # DWMWA_CAPTION_COLOR
+            (36, 0xF4F3F2),  # DWMWA_TEXT_COLOR
+        ):
+            value = ctypes.c_uint32(color)
+            dwmapi.DwmSetWindowAttribute(
+                hwnd, attribute, ctypes.byref(value), ctypes.sizeof(value)
+            )
+    except (AttributeError, OSError):
+        # Older Windows versions may not expose the DWM color attributes.
+        return
 
 
 def _free_port() -> int:

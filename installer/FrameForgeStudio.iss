@@ -50,8 +50,8 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; Flags: unchecked
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\FrameForgeStudio.exe"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\FrameForgeStudio.exe"; Tasks: desktopicon
+Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\FrameForgeStudio.exe"; IconFilename: "{app}\jiaozi-creation-studio.ico"; IconIndex: 0
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\FrameForgeStudio.exe"; IconFilename: "{app}\jiaozi-creation-studio.ico"; IconIndex: 0; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\FrameForgeStudio.exe"; Description: "启动饺子创作台"; Flags: nowait postinstall skipifsilent

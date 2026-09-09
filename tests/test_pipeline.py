@@ -19,13 +19,30 @@ class PipelineTests(unittest.TestCase):
         self.assertGreaterEqual(len(project.shots), 2)
         self.assertEqual(project.metadata["generation_mode"], "offline-rule-based")
         self.assertFalse(project.continuity_issues)
-        self.assertIn("角色四视图", project.characters[0].turnaround_prompt)
-        self.assertIn("纯白背景", project.characters[0].turnaround_prompt)
+        self.assertIn("角色固定身份", project.characters[0].turnaround_prompt)
+        self.assertIn("画面上方", project.characters[0].turnaround_prompt)
+        self.assertIn("画面左侧", project.characters[0].turnaround_prompt)
+        self.assertIn("画面底部", project.characters[0].turnaround_prompt)
+        self.assertIn("画面右侧", project.characters[0].turnaround_prompt)
+        self.assertIn("皮肤纹理", project.characters[0].turnaround_prompt)
+        self.assertIn("眼神高光", project.characters[0].turnaround_prompt)
         self.assertIn("无人物", project.scenes[0].environment_prompt)
+        self.assertIn("固定陈设", project.scenes[0].environment_prompt)
         self.assertIn("Seedance 2.0", project.shots[0].video_prompt)
         self.assertIn("时间轴", project.shots[0].video_prompt)
         self.assertIn("不生成音乐", project.shots[0].video_prompt)
         self.assertIn("不要生成任何字幕", project.shots[0].video_prompt)
+        self.assertTrue(project.material_map)
+        for asset in project.material_map:
+            self.assertTrue(asset.prompt.startswith(f"资产编号：{asset.id}。"))
+        for asset_id in project.shots[0].state_contract.reference_assets:
+            self.assertIn(asset_id, {asset.id for asset in project.material_map})
+            self.assertIn(asset_id, project.shots[0].first_frame_prompt)
+            self.assertIn(asset_id, project.shots[0].video_prompt)
+            self.assertIn(asset_id, project.shots[0].last_frame_prompt)
+        if project.props:
+            self.assertIn("剧情用途", project.props[0].description)
+            self.assertIn("磨损", project.props[0].description)
 
         with tempfile.TemporaryDirectory() as directory:
             write_outputs(project, Path(directory))
@@ -50,6 +67,60 @@ class PipelineTests(unittest.TestCase):
         self.assertNotEqual(first_project.story_bible.logline, second_project.story_bible.logline)
         self.assertNotEqual(first_project.shots[0].video_prompt, second_project.shots[0].video_prompt)
         self.assertNotEqual(first_project.scenes[0].name, second_project.scenes[0].name)
+
+    def test_weather_defaults_to_a_shootable_condition(self) -> None:
+        project = build_default_agent(offline_demo=True).run(
+            "上午，市中心办公室内，许宁推开玻璃门，把文件放到会议桌上。",
+            GenerationOptions(title="会议前夕", visual_style="电影感二维国漫"),
+        )
+
+        self.assertEqual(project.scenes[0].weather, "晴朗、无明显降水")
+        self.assertNotIn("天气待确认", project.scenes[0].environment_prompt)
+        for shot in project.shots:
+            self.assertNotIn("天气待确认", shot.first_frame_prompt)
+            self.assertNotIn("天气待确认", shot.video_prompt)
+            self.assertNotIn("天气待确认", shot.last_frame_prompt)
+
+    def test_asset_prompt_templates_require_dense_reference_details(self) -> None:
+        from ai_drama_agent.prompts import build_analysis_prompt, build_asset_extraction_prompt
+
+        asset_prompt = build_asset_extraction_prompt("深夜，林舟拿着旧信封走进走廊。", "雨夜归来", "电影感二维国漫")
+        analysis_prompt = build_analysis_prompt("深夜，林舟拿着旧信封走进走廊。", "雨夜归来", "电影感二维国漫")
+
+        for expected in ("皮肤纹理", "眼神高光", "前中后景", "固定陈设", "磨损痕迹", "尺度参照", "资产编号", "C001"):
+            self.assertIn(expected, asset_prompt)
+        self.assertIn("禁止生成或引用 `@图片_...`", asset_prompt)
+        for expected in ("turnaround_prompt", "environment_prompt", "皮肤纹理", "材质", "前中后景"):
+            self.assertIn(expected, analysis_prompt)
+
+    def test_storyboard_uses_real_asset_ids_without_placeholders(self) -> None:
+        project = build_default_agent(offline_demo=True).run(
+            "深夜，林舟拿起旧信封走进办公室，停在桌前。",
+            GenerationOptions(title="夜归", visual_style="电影感二维国漫"),
+        )
+
+        asset_ids = {
+            item.id
+            for item in [*project.characters, *project.scenes, *project.props]
+        }
+        material_ids = {item.id for item in project.material_map}
+        self.assertEqual(asset_ids, material_ids)
+        self.assertEqual(
+            ["C001", "S001", "P001"],
+            [project.characters[0].id, project.scenes[0].id, project.props[0].id],
+        )
+        prompt_text = "\n".join(
+            [item.prompt for item in project.material_map]
+            + [
+                shot.first_frame_prompt + shot.video_prompt + shot.last_frame_prompt
+                for shot in project.shots
+            ]
+        )
+        self.assertNotIn("待确认", prompt_text)
+        self.assertNotIn("@图片_", prompt_text)
+        for shot in project.shots:
+            self.assertEqual("confirmed", shot.status)
+            self.assertTrue(set(shot.state_contract.reference_assets) <= asset_ids)
 
     def test_online_pipeline_uses_one_asset_request_and_local_shots(self) -> None:
         prompts: list[str] = []
@@ -92,7 +163,7 @@ class PipelineTests(unittest.TestCase):
                             "name": "静眠殿",
                             "location": "大炎皇宫静眠殿",
                             "time": "深夜",
-                            "weather": "寒风",
+                            "weather": "天气待确认",
                             "layout": "床榻、木门、破窗形成纵深",
                             "lighting": "残火与冷风夜光",
                             "palette": "冷青灰",
@@ -128,6 +199,10 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(project.story_bible.genre, "古装权谋")
         self.assertGreaterEqual(len(project.shots), 1)
         self.assertTrue(project.shots[0].video_prompt)
+        self.assertNotIn("天气待确认", project.scenes[0].weather)
+        self.assertNotIn("天气待确认", project.scenes[0].environment_prompt)
+        self.assertNotIn("天气待确认", project.shots[0].first_frame_prompt)
+        self.assertNotIn("天气待确认", project.shots[0].video_prompt)
         self.assertEqual(client.calls, 1)
         self.assertEqual(len(prompts), 1)
         self.assertIn("只提取故事与资产", prompts[0])

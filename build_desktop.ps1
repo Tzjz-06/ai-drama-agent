@@ -90,6 +90,7 @@ python -m PyInstaller `
 
 New-Item -ItemType Directory -Force -Path $outputRoot | Out-Null
 Copy-Item -Recurse -Force (Join-Path $distRoot "FrameForgeStudio") $outputRoot
+Copy-Item -Force $appIcon (Join-Path $portableRoot "jiaozi-creation-studio.ico")
 Compress-Archive -Path $portableRoot -DestinationPath (Join-Path $outputRoot "FrameForgeStudio-windows.zip") -Force
 
 $smokeProcess = Start-Process -FilePath (Join-Path $portableRoot "FrameForgeStudio.exe") -ArgumentList "--smoke-test" -Wait -PassThru

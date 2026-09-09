@@ -100,8 +100,14 @@ interface Production {
   scenes: Scene[];
   props: Prop[];
   shots: Shot[];
+  material_map?: MaterialReference[];
   continuity_issues: ContinuityIssue[];
   metadata?: Record<string, unknown>;
+}
+interface MaterialReference {
+  id: string;
+  type: string;
+  purpose: string;
 }
 interface NovelPackage {
   type: "novel_package";
@@ -288,6 +294,7 @@ const chapterSaving = ref(false);
 const showCreateProject = ref(false);
 const showQuickCreate = ref(false);
 const showCreateChapter = ref(false);
+const showPackageProgress = ref(false);
 const projectCreating = ref(false);
 const chapterCreating = ref(false);
 const quickCreating = ref(false);
@@ -376,6 +383,90 @@ function startProgressAnimation(
       estimated_seconds: estimatedSeconds,
     };
   }, 120);
+}
+
+function startPackageProgress(scope: ProductMode): {
+  progressId: string;
+  poll: () => Promise<void>;
+  stop: () => void;
+} {
+  if (chapterProgressTimer) clearInterval(chapterProgressTimer);
+  if (chapterProgressAnimation) clearInterval(chapterProgressAnimation);
+  const progressId = crypto.randomUUID();
+  chapterProgressTarget.value = 1;
+  chapterProgress.value = {
+    status: "running",
+    percent: 0,
+    stage: "准备制作包",
+    message: "正在保存章节并校验生成条件",
+    error: "",
+  };
+  showPackageProgress.value = true;
+  const poll = async (): Promise<void> => {
+    try {
+      const result = await request<{ progress: QuickProgress }>(
+        quickProgressPath(scope, progressId),
+      );
+      chapterProgressTarget.value = Math.max(
+        chapterProgressTarget.value,
+        clampProgressPercent(result.progress.percent),
+      );
+      chapterProgress.value = {
+        ...result.progress,
+        percent: chapterProgress.value.percent,
+      };
+    } catch {
+      // The progress entry may not exist while the save request is in flight.
+    }
+  };
+  chapterProgressAnimation = startProgressAnimation(
+    chapterProgress,
+    isNovelMode.value || isJubenshaMode.value ? 110 : 150,
+  );
+  chapterProgressTimer = setInterval(() => void poll(), 700);
+  return {
+    progressId,
+    poll,
+    stop: () => {
+      if (chapterProgressTimer) clearInterval(chapterProgressTimer);
+      if (chapterProgressAnimation) clearInterval(chapterProgressAnimation);
+      chapterProgressTimer = null;
+      chapterProgressAnimation = null;
+    },
+  };
+}
+
+async function completePackageProgress(stage: string, message: string): Promise<void> {
+  chapterProgressTarget.value = 100;
+  chapterProgress.value = {
+    ...chapterProgress.value,
+    status: "completed",
+    stage,
+    message,
+    error: "",
+  };
+  await new Promise<void>((resolve) => {
+    const waitForProgress = window.setInterval(() => {
+      if (chapterProgress.value.percent >= 100) {
+        window.clearInterval(waitForProgress);
+        resolve();
+      }
+    }, 40);
+  });
+  await new Promise((resolve) => setTimeout(resolve, 450));
+  showPackageProgress.value = false;
+}
+
+function resetPackageProgress(): void {
+  if (generating.value) return;
+  chapterProgress.value = {
+    status: "idle",
+    percent: 0,
+    stage: "等待生成",
+    message: "提交后将显示真实生成阶段",
+    error: "",
+  };
+  chapterProgressTarget.value = 0;
 }
 const deletingProject = ref(false);
 const projectPendingDeletion = ref<ProjectSummary | null>(null);
@@ -817,6 +908,25 @@ const filteredProjects = computed(() =>
   }),
 );
 const assets = computed(() => dramaProduction.value?.[assetTab.value] || []);
+
+function assetKind(item: Asset): "人物" | "场景" | "道具" {
+  if ("appearance" in item) return "人物";
+  if ("location" in item) return "场景";
+  return "道具";
+}
+
+function assetIdentity(item: Asset): string {
+  return `${assetKind(item)}资产：${item.name}（编号 ${item.id}）`;
+}
+
+function assetReferenceLabel(item: Asset): string {
+  const exists = (dramaProduction.value?.material_map || []).some(
+    (material) => material.id === item.id,
+  );
+  return exists
+    ? `${item.id}（分镜直接引用此编号）`
+    : `${item.id}（资产编号）`;
+}
 const progress = computed(() => {
   if (!dramaProduction.value || shots.value.length === 0) return 0;
   const ready = shots.value.filter(
@@ -920,13 +1030,22 @@ async function openProject(project: ProjectSummary): Promise<void> {
     currentProject.value = result.project;
     currentProjectDetail.value = result.project;
     currentChapter.value = result.project.chapters[0] || null;
-    if (currentChapter.value) setChapterDraft(currentChapter.value);
+    if (currentChapter.value) {
+      setChapterDraft(currentChapter.value);
+    } else {
+      resetChapterDraft();
+    }
+    activeShot.value = null;
     route.value = "script";
   } catch (error) {
     await showError(error);
   } finally {
     loading.value = false;
   }
+}
+
+function resetChapterDraft(): void {
+  chapterDraft.value = { title: "", outline: "", content: "" };
 }
 
 function setChapterDraft(chapter: Chapter): void {
@@ -1404,6 +1523,7 @@ async function deleteProject(): Promise<void> {
       currentProjectDetail.value = null;
       currentChapter.value = null;
       activeShot.value = null;
+      resetChapterDraft();
     }
     projectPendingDeletion.value = null;
     showDeleteProject.value = false;
@@ -1695,6 +1815,10 @@ watch(showCreateChapter, (visible) => {
     };
     chapterProgressTarget.value = 0;
   }
+});
+
+watch(showPackageProgress, (visible) => {
+  if (!visible) resetPackageProgress();
 });
 
 async function saveChapter(successMessage = "章节已保存"): Promise<boolean> {
@@ -2329,8 +2453,10 @@ async function generateProduction(): Promise<void> {
     return;
   }
   generating.value = true;
+  const progress = startPackageProgress("drama");
   try {
     await saveChapter();
+    chapterProgressTarget.value = Math.max(chapterProgressTarget.value, 5);
     const result = await request<{ project: Production; chapter: Chapter }>(
       chapterGeneratePath(
         "drama",
@@ -2345,20 +2471,32 @@ async function generateProduction(): Promise<void> {
           aspect_ratio: currentProject.value.aspect_ratio,
           fps: 24,
           target_model: "model-agnostic",
+          progress_id: progress.progressId,
           model_config: textConfig || undefined,
         }),
       },
     );
     currentChapter.value = result.chapter;
     currentChapter.value.production = result.project;
+    await completePackageProgress("制作包已完成", "实体、分镜和提示词已生成并保存");
     route.value = "storyboard";
     activeShot.value = shots.value[0] || null;
     await loadProjects();
     await MessagePlugin.success("实体与分镜已生成");
   } catch (error) {
+    await progress.poll();
+    chapterProgress.value = {
+      ...chapterProgress.value,
+      status: "failed",
+      stage: chapterProgress.value.stage || "制作包生成失败",
+      message: "当前制作包生成阶段未完成",
+      error: error instanceof Error ? error.message : "制作包生成失败",
+    };
     await showError(error);
   } finally {
+    progress.stop();
     generating.value = false;
+    if (!showPackageProgress.value) resetPackageProgress();
   }
 }
 
@@ -2366,8 +2504,10 @@ async function generateNovelPackage(): Promise<void> {
   if (!currentProject.value || !currentChapter.value) return;
   if (!(await ensureTextModelReady())) return;
   generating.value = true;
+  const progress = startPackageProgress("novel");
   try {
     await saveChapter();
+    chapterProgressTarget.value = Math.max(chapterProgressTarget.value, 5);
     const textConfig = activeTextConfig.value;
     const result = await request<{
       chapter: Chapter;
@@ -2385,6 +2525,7 @@ async function generateNovelPackage(): Promise<void> {
           brief: chapterDraft.value.outline,
           target_platform: "番茄小说",
           target_words: 2800,
+          progress_id: progress.progressId,
           model_config: textConfig || undefined,
         }),
       },
@@ -2397,13 +2538,24 @@ async function generateNovelPackage(): Promise<void> {
           item.id === result.chapter.id ? result.chapter : item,
         );
     setChapterDraft(result.chapter);
+    await completePackageProgress("连载方案已完成", "作品设定、章节正文和发布检查已生成并保存");
     route.value = "storyboard";
     await loadProjects();
     await MessagePlugin.success("连载方案已生成");
   } catch (error) {
+    await progress.poll();
+    chapterProgress.value = {
+      ...chapterProgress.value,
+      status: "failed",
+      stage: chapterProgress.value.stage || "连载方案生成失败",
+      message: "当前制作包生成阶段未完成",
+      error: error instanceof Error ? error.message : "连载方案生成失败",
+    };
     await showError(error);
   } finally {
+    progress.stop();
     generating.value = false;
+    if (!showPackageProgress.value) resetPackageProgress();
   }
 }
 
@@ -2411,8 +2563,10 @@ async function generateJubenshaPackage(): Promise<void> {
   if (!currentProject.value || !currentChapter.value) return;
   if (!(await ensureTextModelReady())) return;
   generating.value = true;
+  const progress = startPackageProgress("jubensha");
   try {
     await saveChapter();
+    chapterProgressTarget.value = Math.max(chapterProgressTarget.value, 5);
     const textConfig = activeTextConfig.value;
     const [playerCount = "6人", duration = "4小时"] =
       currentProject.value.aspect_ratio
@@ -2435,6 +2589,7 @@ async function generateJubenshaPackage(): Promise<void> {
           player_count: playerCount,
           duration,
           difficulty: "中等",
+          progress_id: progress.progressId,
           model_config: textConfig || undefined,
         }),
       },
@@ -2447,13 +2602,24 @@ async function generateJubenshaPackage(): Promise<void> {
           item.id === result.chapter.id ? result.chapter : item,
         );
     setChapterDraft(result.chapter);
+    await completePackageProgress("开本制作包已完成", "玩家本、线索、轮次和复盘已生成并保存");
     route.value = "storyboard";
     await loadProjects();
     await MessagePlugin.success("开本制作包已生成");
   } catch (error) {
+    await progress.poll();
+    chapterProgress.value = {
+      ...chapterProgress.value,
+      status: "failed",
+      stage: chapterProgress.value.stage || "开本制作包生成失败",
+      message: "当前制作包生成阶段未完成",
+      error: error instanceof Error ? error.message : "开本制作包生成失败",
+    };
     await showError(error);
   } finally {
+    progress.stop();
     generating.value = false;
+    if (!showPackageProgress.value) resetPackageProgress();
   }
 }
 
@@ -2615,6 +2781,7 @@ function exitProject(): void {
   currentProjectDetail.value = null;
   currentChapter.value = null;
   activeShot.value = null;
+  resetChapterDraft();
   route.value = "projects";
 }
 function setRoute(next: Route): void {
@@ -2693,8 +2860,8 @@ function statusLabel(value: string): string {
     {
       draft: "草稿",
       completed: "已完成",
-      confirmed: "已锁定",
-      待确认: "待确认",
+      confirmed: "已定稿",
+      待确认: "可编辑",
     }[value] || value
   );
 }
@@ -4267,6 +4434,7 @@ onBeforeUnmount(() => {
             >
             <h1>故事的视觉基因</h1>
             <p>实体从剧本中长出来，素材提示词保持同一套视觉风格。</p>
+            <p>人物、场景和道具均使用稳定编号；分镜提示词直接引用 C001、S001、P001，不引用不存在的图片文件。</p>
           </div>
         </div>
         <div class="asset-tabs">
@@ -4288,7 +4456,7 @@ onBeforeUnmount(() => {
             <div class="asset-card-body">
               <div class="asset-card-content">
                 <div class="asset-card-topline">
-                  <span class="asset-id">{{ item.id }}</span>
+                  <span class="asset-id">{{ assetIdentity(item) }}</span>
                   <button
                     class="asset-action"
                     type="button"
@@ -4298,7 +4466,7 @@ onBeforeUnmount(() => {
                     <WriteIcon />
                   </button>
                 </div>
-                <h3>{{ item.name }}</h3>
+                <h3>{{ assetKind(item) }} · {{ item.name }}</h3>
                 <template v-if="'appearance' in item"
                   ><p><b>身份</b>{{ item.role }}</p>
                   <p><b>外貌</b>{{ item.appearance }}</p>
@@ -4311,6 +4479,9 @@ onBeforeUnmount(() => {
                   ><p><b>细节</b>{{ item.description }}</p>
                   <p><b>归属</b>{{ item.owner }}</p></template
                 >
+                <p class="asset-image-references">
+                  <b>分镜引用</b>{{ assetReferenceLabel(item) }}
+                </p>
               </div>
             </div>
           </article>
@@ -4954,6 +5125,46 @@ onBeforeUnmount(() => {
           ><WriteIcon />{{ isNovelMode ? "生成连载方案" : isJubenshaMode ? "生成开本制作包" : "生成剧本与分镜" }}</t-button
         >
       </t-form>
+    </t-dialog>
+    <t-dialog
+      v-model:visible="showPackageProgress"
+      :header="packageButtonLabel"
+      :footer="false"
+      :close-on-overlay-click="!generating"
+      :close-on-esc-keydown="!generating"
+      @close="resetPackageProgress"
+    >
+      <section class="quick-progress" aria-live="polite">
+        <div class="quick-progress-head">
+          <strong>{{ chapterProgress.stage }}</strong
+          ><span>{{ Math.floor(chapterProgress.percent) }}%</span>
+        </div>
+        <div class="quick-progress-track">
+          <div
+            class="quick-progress-fill"
+            :class="{ failed: chapterProgress.status === 'failed' }"
+            :style="{ width: `${chapterProgress.percent}%` }"
+          ></div>
+        </div>
+        <p class="quick-progress-message">
+          {{
+            chapterProgress.status === "failed"
+              ? chapterProgress.error || chapterProgress.message
+              : chapterProgress.message
+          }}
+        </p>
+        <p
+          v-if="progressTimingText(chapterProgress)"
+          class="quick-progress-message"
+        >
+          {{ progressTimingText(chapterProgress) }}
+        </p>
+        <div class="quick-progress-steps">
+          <span :class="{ active: chapterProgressTarget >= 5 }">校验章节</span
+          ><span :class="{ active: chapterProgressTarget >= 30 }">生成制作包</span
+          ><span :class="{ active: chapterProgressTarget >= 90 }">保存制作包</span>
+        </div>
+      </section>
     </t-dialog>
     <t-dialog
       v-model:visible="showAssetEditor"

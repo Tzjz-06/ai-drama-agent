@@ -47,7 +47,7 @@ class Character:
     expression_profile: list[str] = field(default_factory=list)
     voice_profile: str = ""
     continuity_anchors: list[str] = field(default_factory=list)
-    status: Status = "待确认"
+    status: Status = "confirmed"
     turnaround_prompt: str = ""
     expression_prompt: str = ""
     negative_prompt: str = ""
@@ -65,7 +65,7 @@ class Scene:
     palette: str = ""
     fixed_elements: list[str] = field(default_factory=list)
     atmosphere: str = ""
-    status: Status = "待确认"
+    status: Status = "confirmed"
     environment_prompt: str = ""
     negative_prompt: str = ""
 
@@ -91,6 +91,7 @@ class ActionBeat:
 @dataclass
 class ShotStateContract:
     reference_roles: list[str] = field(default_factory=list)
+    reference_assets: list[str] = field(default_factory=list)
     first_visible_frame: str = ""
     screen_layout: str = ""
     subject_state: str = ""
@@ -130,7 +131,7 @@ class Shot:
     expected_failures: list[str] = field(default_factory=list)
     repair_strategy: str = ""
     confidence: Literal["high", "medium", "low"] = "medium"
-    status: Status = "待确认"
+    status: Status = "confirmed"
 
 
 @dataclass

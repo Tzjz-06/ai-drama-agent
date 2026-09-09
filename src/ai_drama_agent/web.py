@@ -941,38 +941,160 @@ class DramaWebHandler(BaseHTTPRequestHandler):
     def _handle_project_generate(
         self, user_id: str, project_id: str, chapter_id: str, payload: dict[str, Any]
     ) -> None:
-        project = self.store.get_project(user_id, project_id)
-        chapter = self.store.get_chapter(user_id, project_id, chapter_id)
-        generation_payload = dict(payload)
-        generation_payload["title"] = f"{project['title']} · {chapter['title']}"
-        generated, files = self._run_generation(generation_payload)
-        saved_chapter = self.store.save_production(
-            user_id, project_id, chapter_id, generated.to_dict()
-        )
-        self._send_json(
-            {
-                "project": generated.to_dict(),
-                "chapter": saved_chapter,
-                "files": files,
-                "mode": generated.metadata.get("generation_mode", "unknown"),
-            }
-        )
+        progress_id = _optional_text(payload, "progress_id", "")[:128]
+        try:
+            if progress_id:
+                self._set_quick_progress(
+                    "drama",
+                    progress_id,
+                    user_id,
+                    5,
+                    "校验章节",
+                    "正在校验剧本和模型配置",
+                    estimated_seconds=CHAPTER_PROGRESS_ESTIMATE_SECONDS["drama"],
+                )
+            project = self.store.get_project(user_id, project_id)
+            chapter = self.store.get_chapter(user_id, project_id, chapter_id)
+            generation_payload = dict(payload)
+            generation_payload["title"] = f"{project['title']} · {chapter['title']}"
+            if progress_id:
+                self._set_quick_progress(
+                    "drama", progress_id, user_id, 30, "生成制作包", "正在提取资产并生成分镜"
+                )
+            generated, files = self._run_generation(generation_payload)
+            if progress_id:
+                self._set_quick_progress(
+                    "drama", progress_id, user_id, 90, "保存制作包", "正在保存实体、分镜和提示词"
+                )
+            saved_chapter = self.store.save_production(
+                user_id, project_id, chapter_id, generated.to_dict()
+            )
+            if progress_id:
+                self._set_quick_progress(
+                    "drama",
+                    progress_id,
+                    user_id,
+                    100,
+                    "制作包已完成",
+                    "实体、分镜和提示词已生成并保存",
+                    status="completed",
+                )
+            self._send_json(
+                {
+                    "project": generated.to_dict(),
+                    "chapter": saved_chapter,
+                    "files": files,
+                    "mode": generated.metadata.get("generation_mode", "unknown"),
+                }
+            )
+        except Exception as error:
+            if progress_id:
+                current = self._get_quick_progress("drama", progress_id) or {}
+                self._set_quick_progress(
+                    "drama",
+                    progress_id,
+                    user_id,
+                    current.get("percent"),
+                    current.get("stage", "制作包生成失败"),
+                    "当前制作包生成阶段未完成",
+                    status="failed",
+                    error=str(error),
+                )
+            raise
 
     def _handle_novel_generate(
         self, user_id: str, project_id: str, chapter_id: str, payload: dict[str, Any]
     ) -> None:
-        saved_chapter, normalized = self._generate_novel_package(
-            user_id, project_id, chapter_id, payload
-        )
-        self._send_json({"chapter": saved_chapter, "novel_package": normalized})
+        progress_id = _optional_text(payload, "progress_id", "")[:128]
+        try:
+            if progress_id:
+                self._set_quick_progress(
+                    "novel",
+                    progress_id,
+                    user_id,
+                    5,
+                    "校验章节",
+                    "正在校验章节和模型配置",
+                    estimated_seconds=CHAPTER_PROGRESS_ESTIMATE_SECONDS["novel"],
+                )
+                self._set_quick_progress(
+                    "novel", progress_id, user_id, 30, "生成制作包", "正在整理连载方案和作品设定"
+                )
+            saved_chapter, normalized = self._generate_novel_package(
+                user_id, project_id, chapter_id, payload
+            )
+            if progress_id:
+                self._set_quick_progress(
+                    "novel",
+                    progress_id,
+                    user_id,
+                    100,
+                    "连载方案已完成",
+                    "作品设定、章节正文和发布检查已生成并保存",
+                    status="completed",
+                )
+            self._send_json({"chapter": saved_chapter, "novel_package": normalized})
+        except Exception as error:
+            if progress_id:
+                current = self._get_quick_progress("novel", progress_id) or {}
+                self._set_quick_progress(
+                    "novel",
+                    progress_id,
+                    user_id,
+                    current.get("percent"),
+                    current.get("stage", "连载方案生成失败"),
+                    "当前制作包生成阶段未完成",
+                    status="failed",
+                    error=str(error),
+                )
+            raise
 
     def _handle_jubensha_generate(
         self, user_id: str, project_id: str, chapter_id: str, payload: dict[str, Any]
     ) -> None:
-        saved_chapter, normalized = self._generate_jubensha_package(
-            user_id, project_id, chapter_id, payload
-        )
-        self._send_json({"chapter": saved_chapter, "jubensha_package": normalized})
+        progress_id = _optional_text(payload, "progress_id", "")[:128]
+        try:
+            if progress_id:
+                self._set_quick_progress(
+                    "jubensha",
+                    progress_id,
+                    user_id,
+                    5,
+                    "校验章节",
+                    "正在校验开本和模型配置",
+                    estimated_seconds=CHAPTER_PROGRESS_ESTIMATE_SECONDS["jubensha"],
+                )
+                self._set_quick_progress(
+                    "jubensha", progress_id, user_id, 30, "生成制作包", "正在整理玩家本、线索和复盘"
+                )
+            saved_chapter, normalized = self._generate_jubensha_package(
+                user_id, project_id, chapter_id, payload
+            )
+            if progress_id:
+                self._set_quick_progress(
+                    "jubensha",
+                    progress_id,
+                    user_id,
+                    100,
+                    "开本制作包已完成",
+                    "玩家本、线索、轮次和复盘已生成并保存",
+                    status="completed",
+                )
+            self._send_json({"chapter": saved_chapter, "jubensha_package": normalized})
+        except Exception as error:
+            if progress_id:
+                current = self._get_quick_progress("jubensha", progress_id) or {}
+                self._set_quick_progress(
+                    "jubensha",
+                    progress_id,
+                    user_id,
+                    current.get("percent"),
+                    current.get("stage", "开本制作包生成失败"),
+                    "当前制作包生成阶段未完成",
+                    status="failed",
+                    error=str(error),
+                )
+            raise
 
     def _handle_chapter_draft(
         self, user_id: str, project_id: str, chapter_id: str, payload: dict[str, Any]
@@ -1332,9 +1454,20 @@ def _build_prompt_document(
     document.add_paragraph(f"章节：第 {chapter.get('episode_no', '')} 集 {chapter.get('title', '')}")
     document.add_paragraph(f"视觉风格：{project.get('style', '')}")
 
-    _append_prompt_section(document, "角色提示词", production.get("characters"), "turnaround_prompt")
-    _append_prompt_section(document, "场景提示词", production.get("scenes"), "environment_prompt")
-    _append_prompt_section(document, "道具提示词", production.get("props"), "description")
+    material_map = production.get("material_map")
+    has_material_prompts = isinstance(material_map, list) and any(
+        isinstance(item, dict) and str(item.get("prompt") or "").strip()
+        for item in material_map
+    )
+    if has_material_prompts:
+        document.add_heading("资产提示词", level=1)
+        document.add_paragraph("分镜直接引用以下真实资产编号，不需要寻找额外图片文件。")
+        _append_prompt_section(document, "资产设定", material_map, "prompt")
+    else:
+        # Compatibility for production packages created before material_map existed.
+        _append_prompt_section(document, "角色提示词", production.get("characters"), "turnaround_prompt")
+        _append_prompt_section(document, "场景提示词", production.get("scenes"), "environment_prompt")
+        _append_prompt_section(document, "道具提示词", production.get("props"), "description")
 
     document.add_heading("分镜提示词", level=1)
     shots = production.get("shots")
@@ -1347,9 +1480,9 @@ def _build_prompt_document(
             shot_id = str(shot.get("id") or f"镜头 {index}")
             document.add_heading(f"{index:02d}. {shot_id}", level=2)
             document.add_paragraph(
-                f"镜头信息：{shot.get('shot_size', '待确认')} / "
-                f"{shot.get('camera_position', '待确认')} / "
-                f"{shot.get('duration_seconds', '待确认')} 秒"
+                f"镜头信息：{shot.get('shot_size') or '未标注景别'} / "
+                f"{shot.get('camera_position') or '未标注机位'} / "
+                f"{shot.get('duration_seconds') or 0} 秒"
             )
             _append_prompt_field(document, "首帧提示词", shot.get("first_frame_prompt"))
             _append_prompt_field(document, "视频提示词", shot.get("video_prompt"))
@@ -1571,7 +1704,7 @@ def _append_prompt_field(document: Document, label: str, value: object) -> None:
     text = str(value).strip() if value is not None else ""
     paragraph = document.add_paragraph()
     paragraph.add_run(f"{label}：").bold = True
-    paragraph.add_run(text or "待确认")
+    paragraph.add_run(text or "暂无内容")
 
 
 def _extract_uploaded_script(payload: dict[str, Any]) -> str:

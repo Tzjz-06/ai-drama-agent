@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .llm import LLMClient, OpenAICompatibleClient
-from .reasoner import RuleBasedClient, build_rule_based_analysis
+from .reasoner import RuleBasedClient, build_rule_based_analysis, enrich_asset_references
 from .models import (
     ActionBeat,
     Character,
@@ -79,6 +79,7 @@ class DramaAgent:
 
         local_data = build_rule_based_analysis(script, options.title, options.visual_style)
         merged = _merge_asset_pipeline_payload(local_data, asset_data)
+        merged = enrich_asset_references(merged, options.visual_style)
         return self._project_from_dict(script, options, merged)
 
     def _project_from_dict(
@@ -201,6 +202,7 @@ class DramaAgent:
             prompt_id=str(item.get("prompt_id", "")),
             state_contract=ShotStateContract(
                 reference_roles=_strings(state.get("reference_roles")),
+                reference_assets=_strings(state.get("reference_assets")),
                 first_visible_frame=str(state.get("first_visible_frame", "")),
                 screen_layout=str(state.get("screen_layout", "")),
                 subject_state=str(state.get("subject_state", "")),
@@ -293,8 +295,29 @@ class DramaAgent:
         character_ids = {item.id for item in project.characters}
         scene_ids = {item.id for item in project.scenes}
         prop_ids = {item.id for item in project.props}
+        material_ids = {item.id for item in project.material_map}
+        asset_ids = character_ids | scene_ids | prop_ids
         shot_ids = set()
         expected_start = 0.0
+
+        for asset_id in sorted(asset_ids - material_ids):
+            issues.append(
+                ContinuityIssue(
+                    "error",
+                    asset_id,
+                    "资产缺少同编号素材表记录。",
+                    f"在 material_map 中补充 id={asset_id} 的唯一记录。",
+                )
+            )
+        for material_id in sorted(material_ids - asset_ids):
+            issues.append(
+                ContinuityIssue(
+                    "error",
+                    material_id,
+                    "素材表编号无法对应角色、场景或道具资产。",
+                    "删除虚构素材名并改用真实的 C/S/P 资产编号。",
+                )
+            )
 
         for shot in project.shots:
             if shot.id in shot_ids:
@@ -324,6 +347,45 @@ class DramaAgent:
                 issues.append(ContinuityIssue("error", shot.id, "缺少视频主提示词。", "补充可直接生成视频的完整提示词。"))
             if not shot.first_frame_prompt or not shot.last_frame_prompt:
                 issues.append(ContinuityIssue("warning", shot.id, "缺少首帧或尾帧提示词。", "补充关键帧提示词以增强连续性。"))
+            for asset_id in shot.state_contract.reference_assets:
+                if asset_id not in asset_ids:
+                    issues.append(
+                        ContinuityIssue(
+                            "error",
+                            shot.id,
+                            f"引用了不存在的角色、场景或道具编号：{asset_id}。",
+                            "改用资产表中真实存在的 C/S/P 编号。",
+                        )
+                    )
+                    continue
+                if asset_id not in material_ids:
+                    issues.append(
+                        ContinuityIssue(
+                            "error",
+                            shot.id,
+                            f"引用了不存在的素材编号：{asset_id}。",
+                            "补充素材表条目或修正镜头引用。",
+                        )
+                    )
+                    continue
+                missing_prompts = [
+                    label
+                    for label, prompt in (
+                        ("首帧", shot.first_frame_prompt),
+                        ("视频主提示词", shot.video_prompt),
+                        ("尾帧", shot.last_frame_prompt),
+                    )
+                    if asset_id not in prompt
+                ]
+                if missing_prompts:
+                    issues.append(
+                        ContinuityIssue(
+                            "error",
+                            shot.id,
+                            f"素材编号 {asset_id} 未写入{'、'.join(missing_prompts)}。",
+                            "将同一素材编号写入首帧、视频主提示词和尾帧。",
+                        )
+                    )
 
         return issues
 
@@ -511,20 +573,21 @@ def render_storyboard(project: DramaProject) -> str:
                 f"- 音效：{shot.sound_design or '无'}",
                 f"- 主提示词 ID：{shot.prompt_id or f'VIDEO_MAIN_{shot.id}'}",
                 "- Shot State Contract：",
-                f"  - 参考角色：{'；'.join(shot.state_contract.reference_roles) or '待确认'}",
+                f"  - 参考角色：{'；'.join(shot.state_contract.reference_roles) or '无人物出镜'}",
+                f"  - 引用资产：{'；'.join(shot.state_contract.reference_assets) or shot.scene_id}",
                 f"  - 首帧状态：{shot.state_contract.first_visible_frame or shot.first_frame_prompt}",
-                f"  - 屏幕方位：{shot.state_contract.screen_layout or '待确认'}",
-                f"  - 主体状态：{shot.state_contract.subject_state or '待确认'}",
-                f"  - 表演因果：{shot.state_contract.performance_cause or '待确认'}",
-                f"  - 道具状态：{shot.state_contract.prop_state or '待确认'}",
-                f"  - 镜头覆盖模式：{shot.state_contract.camera_coverage_mode or '待确认'}",
-                f"  - 镜头路径：{shot.state_contract.camera_path or '待确认'}",
-                f"  - 动作状态变化：{shot.state_contract.action_transition or '待确认'}",
+                f"  - 屏幕方位：{shot.state_contract.screen_layout or '主体居中偏上，保持前中后景层次'}",
+                f"  - 主体状态：{shot.state_contract.subject_state or '按本镜头核心动作进入起始姿态'}",
+                f"  - 表演因果：{shot.state_contract.performance_cause or '触发事件后先变化眼神，再完成肢体动作'}",
+                f"  - 道具状态：{shot.state_contract.prop_state or '无显性关键道具'}",
+                f"  - 镜头覆盖模式：{shot.state_contract.camera_coverage_mode or '连续单镜头'}",
+                f"  - 镜头路径：{shot.state_contract.camera_path or '从起始构图平稳移动到尾帧构图'}",
+                f"  - 动作状态变化：{shot.state_contract.action_transition or shot.visual_action}",
                 f"  - 终帧状态：{shot.state_contract.final_visible_frame or shot.last_frame_prompt}",
                 f"  - 硬限制：{'；'.join(shot.state_contract.hard_limits) or '无'}",
                 "- 动作时间轴：",
                 *[
-                    f"  - {beat.start_second:.2f}s-{beat.end_second:.2f}s：{beat.action}；情绪：{beat.emotion or '待确认'}"
+                    f"  - {beat.start_second:.2f}s-{beat.end_second:.2f}s：{beat.action}；情绪：{beat.emotion or '克制'}"
                     for beat in shot.action_beats
                 ],
                 f"- 首帧提示词：{shot.first_frame_prompt}",
@@ -532,8 +595,8 @@ def render_storyboard(project: DramaProject) -> str:
                 f"- 尾帧提示词：{shot.last_frame_prompt}",
                 f"- 负面提示词：{shot.negative_prompt}",
                 f"- 连续性要求：{'；'.join(shot.continuity_requirements) or '无'}",
-                f"- 常见失败：{'；'.join(shot.expected_failures) or '待确认'}",
-                f"- 失败修复：{shot.repair_strategy or '待确认'}",
+                f"- 常见失败：{'；'.join(shot.expected_failures) or '身份漂移；空间跳变；动作节奏不连贯'}",
+                f"- 失败修复：{shot.repair_strategy or '缩短动作并强化资产编号与首尾帧约束'}",
                 f"- 置信度：{shot.confidence}",
             ]
         )
@@ -680,7 +743,7 @@ def _number(value: object, default: float) -> float:
 
 
 def _status(value: object) -> str:
-    return "confirmed" if value == "confirmed" else "待确认"
+    return "待确认" if value == "待确认" else "confirmed"
 
 
 def build_default_agent(

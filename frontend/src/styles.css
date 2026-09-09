@@ -1097,6 +1097,11 @@ button {
   font-size: 11px;
   line-height: 1.7;
 }
+.asset-card .asset-image-references {
+  max-height: none;
+  overflow: visible;
+  overflow-wrap: anywhere;
+}
 .readiness {
   display: grid;
   grid-template-columns: auto 38px;
