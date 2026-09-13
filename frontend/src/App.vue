@@ -36,7 +36,7 @@ import {
 type Route = "projects" | "script" | "assets" | "storyboard";
 type AuthMode = "login" | "register";
 type StudioTheme = "dark" | "light";
-type ProductMode = "drama" | "novel" | "jubensha";
+type ProductMode = "drama" | "novel";
 
 interface User {
   id: string;
@@ -252,7 +252,7 @@ const theme = ref<StudioTheme>(
   localStorage.getItem(themeKey) === "light" ? "light" : "dark",
 );
 const productMode = ref<ProductMode>(
-  ["drama", "novel", "jubensha"].includes(
+  ["drama", "novel"].includes(
     localStorage.getItem(productModeKey) || "",
   )
     ? (localStorage.getItem(productModeKey) as ProductMode)
@@ -385,7 +385,7 @@ function startProgressAnimation(
   }, 120);
 }
 
-function startPackageProgress(scope: ProductMode): {
+function startPackageProgress(scope: string): {
   progressId: string;
   poll: () => Promise<void>;
   stop: () => void;
@@ -489,16 +489,6 @@ function defaultProjectDraft(mode: ProductMode) {
       description: "",
     };
   }
-  if (mode === "jubensha") {
-    return {
-      product_type: "jubensha" as ProductMode,
-      title: "",
-      genre: "还原本",
-      style: "现代",
-      aspect_ratio: "6人 / 4小时",
-      description: "",
-    };
-  }
   return {
     product_type: "drama" as ProductMode,
     title: "",
@@ -539,14 +529,6 @@ const genreOptionsByProduct = ref<Record<ProductMode, ProjectOption[]>>({
     "武侠",
     "文学小说",
     "游戏动漫",
-  ]),
-  jubensha: projectOptions([
-    "推理本",
-    "欢乐本",
-    "情感本",
-    "演绎本",
-    "机制阵营本",
-    "还原本",
   ]),
 });
 const visualStyleOptionsByProduct = ref<Record<ProductMode, ProjectOption[]>>({
@@ -594,16 +576,6 @@ const visualStyleOptionsByProduct = ref<Record<ProductMode, ProjectOption[]>>({
     "剑道",
     "诸天万界",
   ]),
-  jubensha: projectOptions([
-    "古代",
-    "近代",
-    "现代",
-    "未来",
-    "架空",
-    "中式",
-    "西方",
-    "日式",
-  ]),
 });
 const genreOptions = computed(() => genreOptionsByProduct.value[productMode.value]);
 const visualStyleOptions = computed(
@@ -619,10 +591,10 @@ const quickNovelStyleOptions = computed(
   () => visualStyleOptionsByProduct.value.novel,
 );
 const quickJubenshaGenreOptions = computed(
-  () => genreOptionsByProduct.value.jubensha,
+  () => projectOptions(["推理本", "欢乐本", "情感本", "演绎本", "机制阵营本", "还原本"]),
 );
 const quickJubenshaStyleOptions = computed(
-  () => visualStyleOptionsByProduct.value.jubensha,
+  () => projectOptions(["古代", "近代", "现代", "未来", "架空", "中式", "西方", "日式"]),
 );
 const quickJubenshaPlayerCountOptions = projectOptions([
   "4人",
@@ -750,7 +722,7 @@ const ccSwitchStatusMessage = computed(() => {
 });
 
 const isNovelMode = computed(() => productMode.value === "novel");
-const isJubenshaMode = computed(() => productMode.value === "jubensha");
+const isJubenshaMode = computed(() => false);
 const productName = computed(() =>
   isNovelMode.value
     ? "饺子网文"
@@ -1073,16 +1045,16 @@ function setProductMode(mode: ProductMode): void {
   exitProject();
 }
 
-function quickCreatePath(mode: ProductMode): string {
+function quickCreatePath(mode: string): string {
   return `/api/${mode}/quick-create`;
 }
 
-function quickProgressPath(mode: ProductMode, progressId: string): string {
+function quickProgressPath(mode: string, progressId: string): string {
   return `/api/${mode}/progress/${progressId}`;
 }
 
 function chapterGeneratePath(
-  mode: ProductMode,
+  mode: string,
   projectId: string,
   chapterId: string,
 ): string {
@@ -3769,13 +3741,6 @@ onBeforeUnmount(() => {
           >
             网文
           </button>
-          <button
-            :class="{ active: productMode === 'jubensha' }"
-            type="button"
-            @click="setProductMode('jubensha')"
-          >
-            剧本杀
-          </button>
         </div>
         <span class="eyebrow">CREATOR ACCESS</span>
         <h2>{{ authMode === "login" ? "继续你的创作" : "创建创作者账户" }}</h2>
@@ -3868,13 +3833,6 @@ onBeforeUnmount(() => {
           @click="setProductMode('novel')"
         >
           网文
-        </button>
-        <button
-          :class="{ active: productMode === 'jubensha' }"
-          type="button"
-          @click="setProductMode('jubensha')"
-        >
-          剧本杀
         </button>
       </div>
       <div class="project-switcher" @click="setRoute('projects')">

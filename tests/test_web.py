@@ -145,64 +145,6 @@ class WebTests(unittest.TestCase):
             self.assertEqual(progress["status"], "completed")
             self.assertEqual(progress["percent"], 100)
 
-    def test_jubensha_generate_distills_round_table_package(self) -> None:
-        from ai_drama_agent.store import LocalStore
-        from ai_drama_agent.web import DramaWebHandler
-
-        with tempfile.TemporaryDirectory() as directory:
-            store = LocalStore(Path(directory) / "app_state.json")
-            user = store.register("jubensha-writer", "", "secret123")
-            project = store.create_project(
-                user["id"],
-                {
-                    "title": "钟楼旧宴",
-                    "product_type": "jubensha",
-                    "description": "六个旧友在闭馆钟楼重聚。",
-                },
-            )
-            chapter = store.create_chapter(
-                user["id"], project["id"], {"title": "第 1 幕", "content": "圆桌上出现死者邀请函。"}
-            )
-            handler = object.__new__(DramaWebHandler)
-            handler.store = store
-            handler.offline_demo = True
-            response: dict[str, object] = {}
-            handler._send_json = response.update
-
-            handler._handle_jubensha_generate(
-                user["id"],
-                project["id"],
-                chapter["id"],
-                {
-                    "source_text": "六个旧友在闭馆钟楼重聚，桌上出现一封写给死者的邀请函。",
-                    "player_count": "5人",
-                    "duration": "3小时",
-                    "progress_id": "jubensha-package-progress",
-                },
-            )
-
-            package = response["jubensha_package"]
-            saved = response["chapter"]
-            self.assertEqual(package["type"], "jubensha_package")
-            self.assertIn("席位契约", package["stages"])
-            self.assertIn("真相骨架", package["stages"])
-            self.assertEqual(package["metadata"]["source"], "jiaozi-jubensha-engine-v1")
-            self.assertTrue(package["roles"])
-            self.assertTrue(package["clues"])
-            self.assertTrue(package["rounds"])
-            self.assertIn("dm_manual", package)
-            self.assertIn("playability_gate", package)
-            self.assertEqual(package["play_contract"]["player_count"], "5人")
-            self.assertEqual(package["play_contract"]["duration"], "3小时")
-            self.assertEqual(saved["production"]["type"], "jubensha_package")
-            summary = store.list_projects(user["id"])[0]
-            self.assertGreaterEqual(summary["jubensha_role_count"], 1)
-            self.assertGreaterEqual(summary["jubensha_clue_count"], 1)
-            self.assertGreaterEqual(summary["jubensha_round_count"], 1)
-            progress = handler._get_quick_progress("jubensha", "jubensha-package-progress")
-            self.assertEqual(progress["status"], "completed")
-            self.assertEqual(progress["percent"], 100)
-
     def test_drama_generate_records_package_progress(self) -> None:
         from ai_drama_agent.store import LocalStore
         from ai_drama_agent.web import DramaWebHandler
@@ -287,41 +229,6 @@ class WebTests(unittest.TestCase):
             self.assertEqual(package["type"], "novel_package")
             self.assertTrue(chapter["production"])
             progress = handler._get_quick_progress("novel", "novel-progress")
-            self.assertEqual(progress["status"], "completed")
-
-    def test_jubensha_quick_create_uses_jubensha_namespace(self) -> None:
-        from ai_drama_agent.store import LocalStore
-        from ai_drama_agent.web import DramaWebHandler
-
-        with tempfile.TemporaryDirectory() as directory:
-            store = LocalStore(Path(directory) / "app_state.json")
-            user = store.register("jubensha-quick-create", "", "secret123")
-            handler = object.__new__(DramaWebHandler)
-            handler.store = store
-            handler.offline_demo = True
-            response: dict[str, object] = {}
-            handler._send_json = response.update
-
-            handler._handle_jubensha_quick_create(
-                user["id"],
-                {
-                    "title": "钟楼旧宴",
-                    "brief": "六个旧友在闭馆钟楼重聚。",
-                    "genre": "还原本",
-                    "style": "现代",
-                    "player_count": "6人",
-                    "duration": "4小时",
-                    "progress_id": "jubensha-progress",
-                },
-            )
-
-            project = response["project"]
-            chapter = response["chapter"]
-            package = response["jubensha_package"]
-            self.assertEqual(project["product_type"], "jubensha")
-            self.assertEqual(package["type"], "jubensha_package")
-            self.assertTrue(chapter["production"])
-            progress = handler._get_quick_progress("jubensha", "jubensha-progress")
             self.assertEqual(progress["status"], "completed")
 
     def test_production_package_patch_updates_novel_cards(self) -> None:
@@ -742,48 +649,6 @@ class WebTests(unittest.TestCase):
         self.assertIn("读者契约", summary_text)
         self.assertIn("首章正文预览", summary_text)
         self.assertIn("主角重新开始", chapter_text)
-
-    def test_jubensha_archive_contains_summary_and_opening_document(self) -> None:
-        from docx import Document
-
-        from ai_drama_agent.web import _build_production_archive
-
-        content = _build_production_archive(
-            {"title": "钟楼旧宴", "product_type": "jubensha"},
-            {
-                "title": "第 1 幕 入席",
-                "outline": "所有人回到钟楼。",
-                "content": "DM开场词\n今晚的圆桌已准备好。",
-            },
-            {
-                "type": "jubensha_package",
-                "title": "钟楼旧宴",
-                "positioning": "六人还原本",
-                "stages": ["席位契约", "真相骨架"],
-                "play_contract": {"player_count": "6人"},
-                "truth_spine": {"opening_question": "谁最早进入钟楼"},
-                "roles": [{"name": "沈砚"}],
-                "clues": [{"id": "CLUE-001", "truth_target": "时间异常"}],
-                "rounds": [{"name": "入席开局"}],
-                "dm_manual": {"opening": "DM开场词"},
-                "playability_gate": {"role_balance": "平衡"},
-                "chapter_title": "第 1 幕 入席",
-                "opening_script": "DM开场词\n今晚的圆桌已准备好。",
-            },
-        )
-        with zipfile.ZipFile(io.BytesIO(content)) as archive:
-            names = archive.namelist()
-            summary_name = next(name for name in names if name.endswith("-剧本杀制作包.md"))
-            chapter_name = next(name for name in names if name.endswith("-开局正文.docx"))
-            self.assertTrue(any(name.endswith("-项目.json") for name in names))
-            summary_text = archive.read(summary_name).decode("utf-8")
-            chapter_text = "\n".join(
-                paragraph.text
-                for paragraph in Document(io.BytesIO(archive.read(chapter_name))).paragraphs
-            )
-        self.assertIn("席位契约", summary_text)
-        self.assertIn("真相骨架", summary_text)
-        self.assertIn("今晚的圆桌已准备好", chapter_text)
 
     def test_pdf_always_mode_skips_native_text_layer(self) -> None:
         from ai_drama_agent.web import _extract_uploaded_script

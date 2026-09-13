@@ -121,7 +121,12 @@ class LocalStore:
 
     def list_projects(self, user_id: str) -> list[dict[str, Any]]:
         with self._lock:
-            projects = [project for project in self._data["projects"].values() if project["user_id"] == user_id]
+            projects = [
+                project
+                for project in self._data["projects"].values()
+                if project["user_id"] == user_id
+                and project.get("product_type") != "jubensha"
+            ]
             return [_project_summary(project) for project in sorted(projects, key=lambda item: item["updated_at"], reverse=True)]
 
     def create_project(self, user_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -263,8 +268,8 @@ class LocalStore:
         if not isinstance(production, dict):
             raise ValueError("制作包数据格式不正确。")
         package_type = str(production.get("type") or "").strip()
-        if package_type not in {"novel_package", "jubensha_package"}:
-            raise ValueError("只支持编辑网文或剧本杀制作包。")
+        if package_type != "novel_package":
+            raise ValueError("只支持编辑网文制作包。")
 
         with self._lock:
             project = self._owned_project(user_id, project_id)
@@ -440,7 +445,9 @@ def _product_type(payload: dict[str, Any]) -> str:
     if not isinstance(value, str):
         return "drama"
     normalized = value.strip().lower()
-    return normalized if normalized in {"drama", "novel", "jubensha"} else "drama"
+    if normalized == "jubensha":
+        raise StoreError("剧本杀功能已下线。")
+    return normalized if normalized in {"drama", "novel"} else "drama"
 
 
 def _infer_legacy_product_type(project: dict[str, Any]) -> str:

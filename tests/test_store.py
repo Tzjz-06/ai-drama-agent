@@ -55,39 +55,19 @@ class StoreTests(unittest.TestCase):
             self.assertEqual(project["aspect_ratio"], "长篇连载")
             self.assertEqual(store.list_projects(user["id"])[0]["product_type"], "novel")
 
-    def test_jubensha_project_defaults_and_summary_counts(self) -> None:
-        from ai_drama_agent.store import LocalStore
+    def test_removed_jubensha_product_type_is_rejected(self) -> None:
+        from ai_drama_agent.store import LocalStore, StoreError
 
         with tempfile.TemporaryDirectory() as directory:
             store = LocalStore(Path(directory) / "app_state.json")
-            user = store.register("dm-writer", "", "secret123")
-            project = store.create_project(
-                user["id"],
-                {"title": "饺子剧本杀", "product_type": "jubensha"},
-            )
-            self.assertEqual(project["product_type"], "jubensha")
-            self.assertEqual(project["genre"], "还原推理")
-            self.assertEqual(project["style"], "沉浸式盒装本")
-            self.assertEqual(project["aspect_ratio"], "6人 / 4小时")
+            user = store.register("creator", "", "secret123")
+            with self.assertRaisesRegex(StoreError, "功能已下线"):
+                store.create_project(
+                    user["id"],
+                    {"title": "已下线产品", "product_type": "jubensha"},
+                )
 
-            chapter = store.create_chapter(user["id"], project["id"], {"title": "第 1 幕"})
-            store.save_production(
-                user["id"],
-                project["id"],
-                chapter["id"],
-                {
-                    "type": "jubensha_package",
-                    "roles": [{"name": "沈砚"}, {"name": "陆岚"}],
-                    "clues": [{"id": "CLUE-001"}],
-                    "rounds": [{"name": "入席"}],
-                },
-            )
-            summary = store.list_projects(user["id"])[0]
-            self.assertEqual(summary["jubensha_role_count"], 2)
-            self.assertEqual(summary["jubensha_clue_count"], 1)
-            self.assertEqual(summary["jubensha_round_count"], 1)
-
-    def test_novel_and_jubensha_packages_can_be_saved_after_card_edit(self) -> None:
+    def test_novel_packages_can_be_saved_after_card_edit(self) -> None:
         from ai_drama_agent.store import LocalStore
 
         with tempfile.TemporaryDirectory() as directory:
@@ -113,25 +93,6 @@ class StoreTests(unittest.TestCase):
             self.assertEqual(updated_novel["production"]["title"], "新书名")
             self.assertEqual(updated_novel["production"]["positioning"], "新卖点")
 
-            jubensha = store.create_project(
-                user["id"], {"title": "旧剧本", "product_type": "jubensha"}
-            )
-            jubensha_chapter = store.create_chapter(
-                user["id"], jubensha["id"], {"title": "第 1 幕"}
-            )
-            store.save_production(
-                user["id"],
-                jubensha["id"],
-                jubensha_chapter["id"],
-                {"type": "jubensha_package", "roles": [{"name": "旧角色"}]},
-            )
-            updated_jubensha = store.update_production_package(
-                user["id"],
-                jubensha["id"],
-                jubensha_chapter["id"],
-                {"type": "jubensha_package", "roles": [{"name": "新角色"}]},
-            )
-            self.assertEqual(updated_jubensha["production"]["roles"][0]["name"], "新角色")
 
     def test_delete_chapter_removes_its_production_without_touching_other_chapters(self) -> None:
         from ai_drama_agent.store import LocalStore, StoreError
@@ -224,7 +185,7 @@ class StoreTests(unittest.TestCase):
             store = LocalStore(path)
             projects = {project["id"]: project for project in store.list_projects(user_id)}
 
-            self.assertEqual(projects["project_script"]["product_type"], "jubensha")
+            self.assertNotIn("project_script", projects)
             self.assertEqual(projects["project_novel"]["product_type"], "novel")
             self.assertEqual(projects["project_drama"]["product_type"], "drama")
             persisted = json.loads(path.read_text(encoding="utf-8"))
