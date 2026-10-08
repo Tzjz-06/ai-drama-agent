@@ -1,0 +1,22 @@
+flowchart TD
+    Input[剧本文本 / PDF / DOCX / 图片] --> Parse[文本解析与 OCR]
+    Parse --> Script[章节正文]
+    Script --> Compress[ForgettingCurveCompressor<br/>上下文压缩]
+    Compress --> Extract[LLM 资产提取]
+    Script --> Rule[规则分析与待确认信息补全]
+    Extract --> Merge[资产引用合并与连续性检查]
+    Rule --> Merge
+    Merge --> Project[DramaProject<br/>角色 / 场景 / 道具 / 镜头]
+    Project --> JSON[project.json]
+    Project --> Markdown[Markdown / Word / ZIP 制作包]
+    Project --> Prompt[首帧 / 视频 / 尾帧提示词]
+    JSON --> Store[LocalStore 按 user_id 持久化]
+    Store --> Sync[revision + change_log]
+    Sync --> Clients[电脑端与手机端自动刷新]
+
+    classDef input fill:#2b2020,stroke:#ff665f,color:#fff;
+    classDef process fill:#15181d,stroke:#7f8c9b,color:#fff;
+    classDef output fill:#222831,stroke:#ff665f,color:#fff;
+    class Input input;
+    class Parse,Compress,Extract,Rule,Merge,Store,Sync process;
+    class Script,Project,JSON,Markdown,Prompt,Clients output;

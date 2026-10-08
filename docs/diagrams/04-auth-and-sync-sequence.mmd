@@ -1,0 +1,33 @@
+sequenceDiagram
+    actor User as 用户
+    participant Client as 浏览器 / 桌面端
+    participant API as DramaWebHandler
+    participant Store as LocalStore
+    participant Peer as 另一台设备
+
+    User->>Client: 注册或登录
+    Client->>API: POST /api/auth/login
+    API->>Store: 校验密码哈希
+    Store-->>API: token + user
+    API-->>Client: Bearer token / HttpOnly Cookie
+
+    Client->>API: PATCH 项目或章节
+    API->>Store: 校验 user_id 并保存
+    Store->>Store: revision + 1
+    Store->>Store: 记录 change_log
+    Store-->>API: 已保存数据
+    API-->>Client: 200 JSON
+
+    loop 每 3 秒
+        Peer->>API: GET /api/sync?revision=n
+        API->>Store: 查询 changes_since(user_id, n)
+        Store-->>API: revision / project_ids
+        API-->>Peer: 共享修订结果
+    end
+
+    alt 存在远端更新且本地无未保存草稿
+        Peer->>API: 重新读取项目
+        API-->>Peer: 最新章节与制作包
+    else 存在本地草稿
+        API-->>Peer: 提示远端更新，保留本地草稿
+    end

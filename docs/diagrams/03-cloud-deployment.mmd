@@ -1,0 +1,18 @@
+flowchart LR
+    DNS[域名 DNS A 记录] --> HTTPS[HTTPS :443]
+    HTTP[HTTP :80] --> Caddy
+    HTTPS --> Caddy[Caddy 反向代理<br/>自动申请 / 续期证书]
+    Caddy --> App[Python Web 容器<br/>0.0.0.0:8765]
+    App --> Data[(app_data volume<br/>app_state.json)]
+    App --> Model[模型服务<br/>AI_DRAMA_BASE_URL]
+    Admin[运维者] --> Compose[docker compose<br/>up -d --build]
+    Compose --> Caddy
+    Compose --> App
+    Backup[备份任务] --> Data
+
+    classDef edge fill:#2b2020,stroke:#ff665f,color:#fff;
+    classDef service fill:#15181d,stroke:#7f8c9b,color:#fff;
+    classDef storage fill:#222831,stroke:#ff665f,color:#fff;
+    class DNS,HTTP,HTTPS,Admin,Backup edge;
+    class Caddy,App,Compose,Model service;
+    class Data storage;

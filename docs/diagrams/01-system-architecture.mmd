@@ -1,0 +1,35 @@
+flowchart LR
+    subgraph Clients[客户端]
+        Browser[浏览器 / PWA]
+        Desktop[Windows 桌面端<br/>Qt WebEngine]
+    end
+
+    subgraph App[FrameForge Studio 应用层]
+        Web[DramaWebHandler<br/>HTTP API + 静态资源]
+        UI[Vue + TDesign 工作台]
+        Agent[DramaAgent<br/>制作包生成]
+        Store[LocalStore<br/>账户 / 项目 / 章节 / 会话]
+        OCR[PaddleOCR / 文档解析]
+    end
+
+    subgraph Providers[外部模型与配置]
+        LLM[OpenAI-compatible LLM]
+        CCSwitch[CC-Switch 本地代理]
+    end
+
+    Browser -->|HTTPS / JSON| Web
+    Desktop -->|随机本地端口| Web
+    Web --> UI
+    Web --> Store
+    Web --> Agent
+    Web --> OCR
+    Agent --> LLM
+    Agent --> CCSwitch
+    CCSwitch --> LLM
+
+    classDef client fill:#222831,stroke:#ff665f,color:#fff;
+    classDef app fill:#15181d,stroke:#7f8c9b,color:#fff;
+    classDef provider fill:#2b2020,stroke:#ff665f,color:#fff;
+    class Browser,Desktop client;
+    class Web,UI,Agent,Store,OCR app;
+    class LLM,CCSwitch provider;
