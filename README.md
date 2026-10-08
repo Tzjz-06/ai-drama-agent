@@ -136,6 +136,20 @@ python -m ai_drama_agent.web
 
 本地账户、项目、章节和每章生成结果默认保存在 `data/app_state.json`。可用 `AI_DRAMA_DATA_FILE` 指定其他位置；密码只保存 PBKDF2 哈希，不保存明文。
 
+### 手机 App 端与云端双端互联
+
+前端已经支持 PWA。部署到 HTTPS 域名后，手机浏览器打开同一个地址，选择“添加到主屏幕”即可安装成 App；电脑端和手机端登录同一账户后共享云端项目、章节和制作包。两端每 3 秒检查一次共享修订号，另一端保存后会自动刷新；当前设备有未保存草稿时会保留草稿并提示存在远端更新。
+
+需要云端部署时，直接使用仓库里的 `Dockerfile`、`docker-compose.cloud.yml` 和 `deploy/Caddyfile`：
+
+```bash
+cp .env.example .env
+# 编辑 .env，填写 DOMAIN 和模型配置
+docker compose --env-file .env -f docker-compose.cloud.yml up -d --build
+```
+
+Caddy 会自动申请 HTTPS 证书，项目数据保存在 Docker volume。完整的域名、端口、备份和更新说明见 [docs/cloud-deployment.md](docs/cloud-deployment.md)。
+
 ### PaddleOCR
 
 扫描版 PDF、PNG 和 JPG 会使用 PaddleOCR 中文模型识别；PDF 若本身含有足够文本则直接读取文本层，扫描版才会渲染页面后调用 PaddleOCR。首次 OCR 可能需要下载中文模型。

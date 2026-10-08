@@ -40,6 +40,8 @@ class LocalStore:
         self._data = self._load()
         self._data.setdefault("tasks", {})
         self._data.setdefault("sessions", {})
+        self._data.setdefault("revision", 0)
+        self._data.setdefault("change_log", [])
         if self._normalize_legacy_project_types():
             self._save()
 
@@ -59,8 +61,8 @@ class LocalStore:
         email = email.strip().lower()
         if len(username) < 2:
             raise StoreError("用户名至少需要 2 个字符。")
-        if len(password) < 6:
-            raise StoreError("密码至少需要 6 个字符。")
+        if len(password) < 8:
+            raise StoreError("密码至少需要 8 个字符。")
         with self._lock:
             users = self._data["users"]
             if any(user["username"].lower() == username.lower() for user in users.values()):
@@ -129,6 +131,35 @@ class LocalStore:
             ]
             return [_project_summary(project) for project in sorted(projects, key=lambda item: item["updated_at"], reverse=True)]
 
+    def revision(self) -> int:
+        """Return the shared-state revision used by connected clients."""
+        with self._lock:
+            return int(self._data.get("revision", 0))
+
+    def changes_since(self, user_id: str, revision: int) -> dict[str, Any]:
+        """Report which of this user's projects changed after ``revision``."""
+        with self._lock:
+            current = int(self._data.get("revision", 0))
+            since = max(0, int(revision))
+            changed = current > since
+            project_ids: list[str] = []
+            if changed:
+                for entry in self._data.get("change_log", []):
+                    if int(entry.get("revision", 0)) <= since:
+                        continue
+                    if entry.get("user_id") != user_id:
+                        continue
+                    project_id = str(entry.get("project_id") or "")
+                    if project_id and project_id not in project_ids:
+                        project_ids.append(project_id)
+            return {
+                "revision": current,
+                "since": since,
+                "changed": changed,
+                "project_ids": project_ids,
+                "server_time": _now(),
+            }
+
     def create_project(self, user_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         product_type = _product_type(payload)
         title = _text(payload, "title", _default_title(product_type))
@@ -150,6 +181,7 @@ class LocalStore:
         }
         with self._lock:
             self._data["projects"][project_id] = project
+            self._touch(user_id, project_id, "project.created")
             self._save()
             return _project_summary(project)
 
@@ -165,6 +197,7 @@ class LocalStore:
                 if isinstance(payload.get(key), str) and payload[key].strip():
                     project[key] = payload[key].strip()
             project["updated_at"] = _now()
+            self._touch(user_id, project_id, "project.updated")
             self._save()
             return _project_summary(project)
 
@@ -177,6 +210,7 @@ class LocalStore:
                 for task_id, task in self._data["tasks"].items()
                 if task.get("project_id") != project_id
             }
+            self._touch(user_id, project_id, "project.deleted")
             self._save()
 
     def delete_chapter(self, user_id: str, project_id: str, chapter_id: str) -> None:
@@ -203,6 +237,7 @@ class LocalStore:
                 else "draft"
             )
             project["updated_at"] = _now()
+            self._touch(user_id, project_id, "chapter.deleted")
             self._save()
 
     def create_chapter(self, user_id: str, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -224,6 +259,7 @@ class LocalStore:
             }
             chapters.append(chapter)
             project["updated_at"] = _now()
+            self._touch(user_id, project_id, "chapter.created")
             self._save()
             return dict(chapter)
 
@@ -243,6 +279,7 @@ class LocalStore:
                 chapter["is_locked"] = payload["is_locked"]
             chapter["updated_at"] = _now()
             project["updated_at"] = chapter["updated_at"]
+            self._touch(user_id, project_id, "chapter.updated")
             self._save()
             return dict(chapter)
 
@@ -255,6 +292,7 @@ class LocalStore:
             chapter["updated_at"] = _now()
             project["status"] = "completed"
             project["updated_at"] = chapter["updated_at"]
+            self._touch(user_id, project_id, "production.saved")
             self._save()
             return dict(chapter)
 
@@ -283,6 +321,7 @@ class LocalStore:
             chapter["production"] = production
             chapter["updated_at"] = _now()
             project["updated_at"] = chapter["updated_at"]
+            self._touch(user_id, project_id, "production.package")
             self._save()
             return dict(chapter)
 
@@ -328,6 +367,7 @@ class LocalStore:
                     asset[key] = payload[key].strip()
             chapter["updated_at"] = _now()
             project["updated_at"] = chapter["updated_at"]
+            self._touch(user_id, project_id, "production.asset")
             self._save()
             return dict(chapter)
 
@@ -365,6 +405,7 @@ class LocalStore:
                     shot[key] = payload[key].strip()
             chapter["updated_at"] = _now()
             project["updated_at"] = chapter["updated_at"]
+            self._touch(user_id, project_id, "production.shots")
             self._save()
             return dict(chapter)
 
@@ -403,6 +444,23 @@ class LocalStore:
                 project["product_type"] = inferred_type
                 changed = True
         return changed
+
+    def _touch(self, user_id: str, project_id: str, kind: str) -> None:
+        """Bump the shared revision so connected clients can detect changes."""
+        revision = int(self._data.get("revision", 0)) + 1
+        self._data["revision"] = revision
+        log = self._data.setdefault("change_log", [])
+        log.append(
+            {
+                "revision": revision,
+                "user_id": user_id,
+                "project_id": project_id,
+                "kind": kind,
+                "at": _now(),
+            }
+        )
+        if len(log) > 500:
+            del log[:-500]
 
     def _save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)

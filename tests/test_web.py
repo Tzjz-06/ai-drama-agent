@@ -662,6 +662,92 @@ class WebTests(unittest.TestCase):
             self.assertEqual(_extract_uploaded_script(payload), "OCR 剧本")
         extractor.assert_called_once_with(b"fake-pdf", mode="always")
 
+    def test_sync_endpoint_reports_shared_revision_to_connected_clients(self) -> None:
+        import threading
+        from http.server import ThreadingHTTPServer
+
+        from ai_drama_agent.store import LocalStore
+        from ai_drama_agent.web import DramaWebHandler
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = LocalStore(Path(directory) / "app_state.json")
+            user = store.register("sync-viewer", "", "secret123")
+            token, _ = store.login("sync-viewer", "secret123")
+            project = store.create_project(user["id"], {"title": "共享项目"})
+
+            class SyncHandler(DramaWebHandler):
+                def log_message(self, format: str, *args: object) -> None:
+                    pass
+
+            SyncHandler.store = store
+            server = ThreadingHTTPServer(("127.0.0.1", 0), SyncHandler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                connection = http.client.HTTPConnection(
+                    "127.0.0.1", server.server_address[1], timeout=5
+                )
+                connection.request("GET", "/api/sync?since=0")
+                response = connection.getresponse()
+                response.read()
+                self.assertEqual(response.status, HTTPStatus.UNAUTHORIZED)
+
+                headers = {"Authorization": f"Bearer {token}"}
+                connection.request("GET", "/api/sync?since=0", headers=headers)
+                response = connection.getresponse()
+                payload = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(response.status, HTTPStatus.OK)
+                self.assertTrue(payload["changed"])
+                self.assertEqual(payload["project_ids"], [project["id"]])
+
+                connection.request(
+                    "GET", f"/api/sync?since={payload['revision']}", headers=headers
+                )
+                response = connection.getresponse()
+                payload = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(response.status, HTTPStatus.OK)
+                self.assertFalse(payload["changed"])
+                self.assertEqual(payload["project_ids"], [])
+                connection.close()
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
+    def test_pwa_root_resources_are_served(self) -> None:
+        import threading
+        from http.server import ThreadingHTTPServer
+
+        from ai_drama_agent.web import DramaWebHandler
+
+        class StaticHandler(DramaWebHandler):
+            def log_message(self, format: str, *args: object) -> None:
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), StaticHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            connection = http.client.HTTPConnection(
+                "127.0.0.1", server.server_address[1], timeout=5
+            )
+            for path, content_type in (
+                ("/manifest.webmanifest", "application/manifest+json"),
+                ("/sw.js", "text/javascript"),
+                ("/icon-192.png", "image/png"),
+            ):
+                connection.request("GET", path)
+                response = connection.getresponse()
+                body = response.read()
+                self.assertEqual(response.status, HTTPStatus.OK)
+                self.assertEqual(response.headers.get_content_type(), content_type)
+                self.assertTrue(body)
+            connection.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
 
 if __name__ == "__main__":
     unittest.main()

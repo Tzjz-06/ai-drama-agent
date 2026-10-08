@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .llm import LLMClient, OpenAICompatibleClient
+from .context_compression import ForgettingCurveCompressor
 from .reasoner import RuleBasedClient, build_rule_based_analysis, enrich_asset_references
 from .models import (
     ActionBeat,
@@ -66,10 +67,13 @@ class DramaAgent:
         options: GenerationOptions,
         client: LLMClient,
     ) -> DramaProject:
+        compressed_script = ForgettingCurveCompressor(max_chars=24000).compress(
+            script, query=f"{options.title} {options.visual_style}"
+        )
         asset_data = client.complete_json(
             ASSET_EXTRACTION_SYSTEM_PROMPT,
             build_asset_extraction_prompt(
-                script,
+                compressed_script.text,
                 options.title,
                 options.visual_style,
                 options.aspect_ratio,
@@ -80,7 +84,16 @@ class DramaAgent:
         local_data = build_rule_based_analysis(script, options.title, options.visual_style)
         merged = _merge_asset_pipeline_payload(local_data, asset_data)
         merged = enrich_asset_references(merged, options.visual_style)
-        return self._project_from_dict(script, options, merged)
+        project = self._project_from_dict(script, options, merged)
+        project.metadata["context_compression"] = {
+            "compressed": compressed_script.compressed,
+            "original_chars": compressed_script.original_chars,
+            "compressed_chars": compressed_script.compressed_chars,
+            "retained_ratio": round(compressed_script.retained_ratio, 4),
+            "selected_blocks": compressed_script.selected_blocks,
+            "total_blocks": compressed_script.total_blocks,
+        }
+        return project
 
     def _project_from_dict(
         self,

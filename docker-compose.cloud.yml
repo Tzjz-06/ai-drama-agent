@@ -1,0 +1,36 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    expose:
+      - "8765"
+    environment:
+      AI_DRAMA_DATA_FILE: /data/app_state.json
+      AI_DRAMA_API_KEY: ${AI_DRAMA_API_KEY:?set AI_DRAMA_API_KEY}
+      AI_DRAMA_BASE_URL: ${AI_DRAMA_BASE_URL:-https://api.openai.com/v1}
+      AI_DRAMA_MODEL: ${AI_DRAMA_MODEL:-gpt-4.1}
+      AI_DRAMA_COOKIE_SECURE: "1"
+    volumes:
+      - app_data:/data
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  app_data:
+  caddy_data:
+  caddy_config:

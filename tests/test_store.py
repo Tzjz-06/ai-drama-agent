@@ -347,6 +347,44 @@ class StoreTests(unittest.TestCase):
                 self.assertIn("new", second._data["users"])
                 self.assertNotIn("legacy-changed", second._data["users"])
 
+    def test_shared_revision_tracks_changes_per_user(self) -> None:
+        from ai_drama_agent.store import LocalStore
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "app_state.json"
+            store = LocalStore(path)
+            owner = store.register("revision-owner", "", "secret123")
+            other = store.register("revision-other", "", "secret123")
+
+            self.assertEqual(store.revision(), 0)
+            self.assertFalse(store.changes_since(owner["id"], 0)["changed"])
+
+            baseline = store.revision()
+            project = store.create_project(owner["id"], {"title": "共享项目"})
+            self.assertEqual(store.revision(), baseline + 1)
+
+            change = store.changes_since(owner["id"], baseline)
+            self.assertTrue(change["changed"])
+            self.assertEqual(change["project_ids"], [project["id"]])
+            self.assertEqual(change["revision"], store.revision())
+            self.assertFalse(store.changes_since(owner["id"], change["revision"])["changed"])
+
+            # 其他账户的修订号会前进，但看不到别人的项目。
+            foreign = store.changes_since(other["id"], baseline)
+            self.assertTrue(foreign["changed"])
+            self.assertEqual(foreign["project_ids"], [])
+
+            chapter = store.create_chapter(owner["id"], project["id"], {"title": "第一集"})
+            store.update_chapter(
+                owner["id"], project["id"], chapter["id"], {"content": "林默推门而入。"}
+            )
+            kinds = [entry["kind"] for entry in store._data["change_log"]]
+            self.assertIn("chapter.created", kinds)
+            self.assertIn("chapter.updated", kinds)
+
+            reopened = LocalStore(path)
+            self.assertEqual(reopened.revision(), store.revision())
+
 
 if __name__ == "__main__":
     unittest.main()

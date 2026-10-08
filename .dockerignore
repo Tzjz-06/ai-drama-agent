@@ -1,0 +1,16 @@
+.git
+.gitignore
+.inspect-cafuc-scai-website
+data
+deliverables
+dist
+build
+outputs
+frontend/node_modules
+frontend/dist
+web
+__pycache__
+*.py[cod]
+.env
+.env.*
+!.env.example

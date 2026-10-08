@@ -264,7 +264,6 @@ const authMode = ref<AuthMode>("login");
 const authBusy = ref(false);
 const authForm = ref({ identity: "", username: "", email: "", password: "" });
 const authError = ref("");
-
 const route = ref<Route>("projects");
 const projects = ref<ProjectSummary[]>([]);
 const currentProject = ref<ProjectSummary | null>(null);
@@ -477,6 +476,7 @@ const showDeleteChapter = ref(false);
 const importingScript = ref(false);
 const scriptFileInput = ref<HTMLInputElement | null>(null);
 const showSettings = ref(false);
+const showMobileAccount = ref(false);
 const exportingPackage = ref(false);
 function defaultProjectDraft(mode: ProductMode) {
   if (mode === "novel") {
@@ -956,11 +956,7 @@ async function submitAuth(): Promise<void> {
           }),
         },
       );
-      token.value = result.token;
-      user.value = result.user;
-      localStorage.setItem(tokenKey, result.token);
-      sessionStorage.removeItem(tokenKey);
-      await loadProjects();
+      completeAuth(result);
     } else {
       await request("/api/auth/register", {
         method: "POST",
@@ -982,6 +978,15 @@ async function submitAuth(): Promise<void> {
   }
 }
 
+function completeAuth(result: { token: string; user: User }): void {
+  token.value = result.token;
+  user.value = result.user;
+  localStorage.setItem(tokenKey, result.token);
+  sessionStorage.removeItem(tokenKey);
+  void loadProjects();
+  startSyncPolling();
+}
+
 async function loadProjects(): Promise<void> {
   const result = await request<{ projects: ProjectSummary[] }>("/api/projects");
   projects.value = result.projects;
@@ -991,6 +996,81 @@ async function loadProjects(): Promise<void> {
     );
     if (refreshed) currentProject.value = refreshed;
   }
+}
+
+const syncRevision = ref(0);
+const remoteUpdateNotice = ref(false);
+let syncTimer: ReturnType<typeof setInterval> | null = null;
+let syncPrimed = false;
+
+function stopSyncPolling(): void {
+  if (syncTimer) clearInterval(syncTimer);
+  syncTimer = null;
+  syncRevision.value = 0;
+  remoteUpdateNotice.value = false;
+  syncPrimed = false;
+}
+
+function hasUnsavedChapterEdits(): boolean {
+  const chapter = currentChapter.value;
+  if (!chapter) return false;
+  return (
+    chapterDraft.value.title !== chapter.title ||
+    chapterDraft.value.outline !== chapter.outline ||
+    chapterDraft.value.content !== chapter.content
+  );
+}
+
+async function applyRemoteChanges(): Promise<void> {
+  await loadProjects();
+  const project = currentProject.value;
+  if (!project) return;
+  if (!projects.value.some((item) => item.id === project.id)) {
+    exitProject();
+    return;
+  }
+  if (hasUnsavedChapterEdits()) {
+    remoteUpdateNotice.value = true;
+    return;
+  }
+  const result = await request<{
+    project: ProjectSummary & { chapters: Chapter[] };
+  }>(`/api/projects/${project.id}`);
+  currentProject.value = result.project;
+  currentProjectDetail.value = result.project;
+  const kept = result.project.chapters.find(
+    (item) => item.id === currentChapter.value?.id,
+  );
+  const next = kept || result.project.chapters[0] || null;
+  currentChapter.value = next;
+  if (next) setChapterDraft(next);
+  else resetChapterDraft();
+  remoteUpdateNotice.value = false;
+}
+
+async function pollSharedState(): Promise<void> {
+  if (!token.value) return;
+  try {
+    const result = await request<{
+      revision: number;
+      changed: boolean;
+      project_ids: string[];
+    }>(`/api/sync?since=${syncRevision.value}`);
+    syncRevision.value = result.revision;
+    if (!syncPrimed) {
+      syncPrimed = true;
+      return;
+    }
+    if (!result.changed || result.project_ids.length === 0) return;
+    await applyRemoteChanges();
+  } catch {
+    /* 网络抖动时保留当前视图，等待下一轮轮询。 */
+  }
+}
+
+function startSyncPolling(): void {
+  stopSyncPolling();
+  syncTimer = setInterval(() => void pollSharedState(), 3000);
 }
 
 async function openProject(project: ProjectSummary): Promise<void> {
@@ -1031,6 +1111,12 @@ function selectChapter(chapter: Chapter): void {
   currentChapter.value = chapter;
   setChapterDraft(chapter);
   route.value = "script";
+}
+
+function selectMobileChapter(event: Event): void {
+  const chapterId = (event.target as HTMLSelectElement).value;
+  const chapter = currentProjectDetail.value?.chapters.find((item) => item.id === chapterId);
+  if (chapter) selectChapter(chapter);
 }
 
 function setProductMode(mode: ProductMode): void {
@@ -2741,12 +2827,15 @@ function toggleTheme(): void {
   localStorage.setItem(themeKey, theme.value);
   document.documentElement.dataset.studioTheme = theme.value;
 }
-function logout(): void {
+async function logout(): Promise<void> {
+  showMobileAccount.value = false;
+  try { if (token.value) await request("/api/auth/logout", { method: "POST", body: "{}" }); } catch { /* 本地仍清理凭据 */ }
   token.value = "";
   user.value = null;
   localStorage.removeItem(tokenKey);
   sessionStorage.removeItem(tokenKey);
   currentProject.value = null;
+  stopSyncPolling();
 }
 function exitProject(): void {
   currentProject.value = null;
@@ -3658,6 +3747,7 @@ onMounted(async () => {
     localStorage.setItem(tokenKey, token.value);
     sessionStorage.removeItem(tokenKey);
     await loadProjects();
+    startSyncPolling();
   } catch {
     logout();
   }
@@ -3668,6 +3758,7 @@ onBeforeUnmount(() => {
   if (quickProgressAnimation) clearInterval(quickProgressAnimation);
   if (chapterProgressTimer) clearInterval(chapterProgressTimer);
   if (chapterProgressAnimation) clearInterval(chapterProgressAnimation);
+  stopSyncPolling();
   document.removeEventListener("click", handleImportButtonClick);
   scriptFileInput.value?.remove();
   scriptFileInput.value = null;
@@ -3776,7 +3867,7 @@ onBeforeUnmount(() => {
               name="password"
               type="password"
               :autocomplete="authMode === 'register' ? 'new-password' : 'current-password'"
-              placeholder="至少 6 位字符"
+              placeholder="至少 8 位字符"
           /></t-form-item>
           <p v-if="authError" class="form-error">{{ authError }}</p>
           <t-button theme="primary" block type="submit" :loading="authBusy"
@@ -3882,6 +3973,17 @@ onBeforeUnmount(() => {
       </div>
     </aside>
     <main class="studio-main">
+      <header class="mobile-header">
+        <button v-if="route !== 'projects'" type="button" class="mobile-icon-button" aria-label="返回项目库" @click="setRoute('projects')"><ChevronDownIcon class="mobile-back-icon" /></button>
+        <img v-else src="/favicon.svg" alt="" width="32" height="32" />
+        <div class="mobile-heading"><strong>{{ route === 'projects' ? '饺子创作台' : currentProject?.title }}</strong><small>{{ route === 'projects' ? productName : currentChapter?.title || '章节创作' }}</small></div>
+        <button type="button" class="mobile-icon-button" aria-label="账户与设置" @click="showMobileAccount = true"><UserIcon /></button>
+      </header>
+      <div v-if="route === 'projects'" class="mobile-product-switch" aria-label="创作类型">
+        <button type="button" :aria-pressed="productMode === 'drama'" @click="setProductMode('drama')">短剧创作</button>
+        <button type="button" :aria-pressed="productMode === 'novel'" @click="setProductMode('novel')">网文创作</button>
+      </div>
+      <p v-if="remoteUpdateNotice" class="mobile-sync-notice" role="status">另一端有更新，当前草稿已保留。</p>
       <header class="topbar">
         <div class="breadcrumbs">
           <span>项目库</span><ChevronDownIcon /><strong>{{
@@ -3895,6 +3997,7 @@ onBeforeUnmount(() => {
         </div>
         <div class="top-actions">
           <span class="save-mark"><CheckCircleIcon /> 本地已保存</span
+          ><span v-if="remoteUpdateNotice" class="sync-mark">另一端有更新</span
           ><button
             class="theme-toggle-launcher"
             type="button"
@@ -4080,6 +4183,14 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <div class="work-layout">
+          <div class="mobile-chapter-picker">
+            <label for="mobile-chapter">当前章节</label>
+            <select id="mobile-chapter" :value="currentChapter?.id || ''" :disabled="!currentProjectDetail?.chapters.length" @change="selectMobileChapter">
+              <option v-if="!currentProjectDetail?.chapters.length" value="">暂无章节</option>
+              <option v-for="chapter in currentProjectDetail?.chapters" :key="chapter.id" :value="chapter.id">{{ chapter.episode_no }} · {{ chapter.title }}</option>
+            </select>
+            <button type="button" class="mobile-icon-button" :disabled="!currentChapter" aria-label="删除当前章节" @click="currentChapter && requestChapterDeletion(currentChapter)"><DeleteIcon /></button>
+          </div>
           <aside class="chapter-rail">
             <div class="rail-title">
               <span>章节</span
@@ -4767,6 +4878,20 @@ onBeforeUnmount(() => {
         </div>
       </section>
     </main>
+    <nav class="mobile-tabbar" aria-label="手机工作台导航">
+      <button type="button" :aria-current="route === 'projects' ? 'page' : undefined" @click="setRoute('projects')"><WalletIcon aria-hidden="true" /><span>项目</span></button>
+      <button type="button" :aria-current="route === 'script' ? 'page' : undefined" :disabled="!currentProject" @click="setRoute('script')"><WriteIcon aria-hidden="true" /><span>{{ isNovelMode ? '写作' : '剧本' }}</span></button>
+      <button type="button" :aria-current="route === 'assets' ? 'page' : undefined" :disabled="isNovelMode ? !novelPackage : !dramaProduction" @click="setRoute('assets')"><LayersIcon aria-hidden="true" /><span>{{ isNovelMode ? '设定' : '资产' }}</span></button>
+      <button type="button" :aria-current="route === 'storyboard' ? 'page' : undefined" :disabled="!currentChapter" @click="setRoute('storyboard')"><ViewListIcon aria-hidden="true" /><span>{{ isNovelMode ? '大纲' : '分镜' }}</span></button>
+    </nav>
+    <t-dialog v-model:visible="showMobileAccount" header="账户与设置" :footer="false" width="420px">
+      <div class="mobile-account-panel">
+        <p><UserIcon aria-hidden="true" />{{ user.username }}</p>
+        <button type="button" @click="showMobileAccount = false; showSettings = true"><SettingIcon aria-hidden="true" />模型与环境</button>
+        <button type="button" @click="toggleTheme"><SunnyIcon v-if="theme === 'dark'" aria-hidden="true" /><MoonIcon v-else aria-hidden="true" />{{ theme === 'dark' ? '切换至日间主题' : '切换至夜间主题' }}</button>
+        <button type="button" @click="logout"><LogoutIcon aria-hidden="true" />退出登录</button>
+      </div>
+    </t-dialog>
     <t-dialog
       v-model:visible="showCreateProject"
       :header="`建立新${productNoun}`"

@@ -20,7 +20,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urlparse, parse_qs
 from xml.etree import ElementTree
 
 try:
@@ -30,6 +30,7 @@ except ImportError:  # pragma: no cover - 仅在运行环境缺少 PDF 依赖时
 
 from . import __version__
 from .cc_switch import load_cc_switch_runtime
+from .context_compression import ForgettingCurveCompressor
 from .llm import (
     CCSwitchChatCompletionsClient,
     CCSwitchResponsesClient,
@@ -118,6 +119,8 @@ class DramaWebHandler(BaseHTTPRequestHandler):
     _quick_progress: dict[str, dict[str, Any]] = {}
     _quick_progress_lock = threading.Lock()
     _quick_progress_history: dict[str, list[float]] = {}
+    _auth_rate: dict[str, list[float]] = {}
+    _auth_rate_lock = threading.Lock()
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -126,6 +129,14 @@ class DramaWebHandler(BaseHTTPRequestHandler):
         if parsed.path == "/":
             self._serve_file(WEB_ROOT / "index.html")
             return
+
+        if not parsed.path.startswith("/api/") and not parsed.path.startswith("/assets/"):
+            relative_path = parsed.path.removeprefix("/")
+            requested = (WEB_ROOT / relative_path).resolve()
+            web_root = WEB_ROOT.resolve()
+            if relative_path and web_root in requested.parents:
+                self._serve_file(requested)
+                return
 
         if parsed.path == "/api/runtime":
             cc_switch = _cc_switch_runtime_payload()
@@ -173,6 +184,19 @@ class DramaWebHandler(BaseHTTPRequestHandler):
                 self._send_json(
                     {"progress": {key: value for key, value in progress.items() if key != "user_id"}}
                 )
+            except AuthError as error:
+                self._json_error(HTTPStatus.UNAUTHORIZED, str(error))
+            return
+
+        if parsed.path == "/api/sync":
+            try:
+                user = self._require_user()
+                raw_since = (parse_qs(parsed.query).get("since") or ["0"])[0]
+                try:
+                    since = max(0, int(raw_since))
+                except ValueError:
+                    since = 0
+                self._send_json(self.store.changes_since(user["id"], since))
             except AuthError as error:
                 self._json_error(HTTPStatus.UNAUTHORIZED, str(error))
             return
@@ -239,7 +263,7 @@ class DramaWebHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/auth/logout":
                 self.store.logout(self._auth_token())
-                self._send_json({"ok": True})
+                self._send_json({"ok": True}, clear_session_cookie=True)
                 return
             if path == "/api/model/test":
                 self._require_user()
@@ -738,9 +762,12 @@ class DramaWebHandler(BaseHTTPRequestHandler):
         if self.offline_demo:
             package = _offline_novel_package(project, chapter, str(seed))
         else:
+            compressed_seed = ForgettingCurveCompressor(max_chars=16000).compress(
+                str(seed), query=f"{project.get('title', '')} {brief}"
+            )
             package = self._build_client(payload).complete_json(
                 NOVEL_PACKAGE_SYSTEM_PROMPT,
-                _build_novel_package_prompt(project, chapter, payload, str(seed)),
+                _build_novel_package_prompt(project, chapter, payload, compressed_seed.text),
             )
         normalized = _normalize_novel_package(package, project, chapter, str(seed))
         saved_chapter = self.store.save_production(user_id, project_id, chapter_id, normalized)
@@ -1139,6 +1166,9 @@ class DramaWebHandler(BaseHTTPRequestHandler):
                     f"梗概：{str(previous.get('outline') or '').strip()[:2000]}\n"
                     f"正文：\n{str(previous.get('content') or '').strip()[:12000]}"
                 )
+                previous_context = ForgettingCurveCompressor(max_chars=9000).compress(
+                    previous_context, query=brief
+                ).text
             if progress_id:
                 self._set_quick_progress(
                     scope,
@@ -1344,12 +1374,43 @@ class DramaWebHandler(BaseHTTPRequestHandler):
     def _handle_login(self, payload: dict[str, Any]) -> None:
         identity = _required_text(payload, "identity")
         password = _required_text(payload, "password")
+        self._check_auth_rate(f"password:{identity.lower()}", 10, 900)
         token, user = self.store.login(identity, password)
-        self._send_json({"token": token, "user": user})
+        self._send_auth_response(token, user)
+
+    def _send_auth_response(self, token: str, user: dict[str, str]) -> None:
+        content = json.dumps({"token": token, "user": user}, ensure_ascii=False).encode("utf-8")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Set-Cookie", f"frameforge_session={token}; Path=/; Max-Age=604800; HttpOnly; SameSite=Lax" + ("; Secure" if os.getenv("AI_DRAMA_COOKIE_SECURE", "0") == "1" else ""))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "same-origin")
+        self.send_header("Content-Length", str(len(content)))
+        self.end_headers()
+        self.wfile.write(content)
+
+    def _check_auth_rate(self, key: str, limit: int, window: int) -> None:
+        now = time.time()
+        client_ip = self.client_address[0] if getattr(self, "client_address", None) else "local"
+        key = f"{client_ip}:{key}"
+        with self._auth_rate_lock:
+            values = [item for item in self._auth_rate.get(key, []) if item > now - window]
+            if len(values) >= limit:
+                raise AuthError("操作过于频繁，请稍后再试。")
+            values.append(now)
+            self._auth_rate[key] = values
 
     def _auth_token(self) -> str:
         header = self.headers.get("Authorization", "")
-        return header.removeprefix("Bearer ").strip()
+        token = header.removeprefix("Bearer ").strip()
+        if token:
+            return token
+        for part in self.headers.get("Cookie", "").split(";"):
+            key, _, value = part.strip().partition("=")
+            if key == "frameforge_session":
+                return value
+        return ""
 
     def _require_user(self) -> dict[str, str]:
         token = self._auth_token()
@@ -1424,10 +1485,15 @@ class DramaWebHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(content)
 
-    def _send_json(self, payload: dict[str, Any]) -> None:
+    def _send_json(self, payload: dict[str, Any], clear_session_cookie: bool = False) -> None:
         content = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        if clear_session_cookie:
+            self.send_header("Set-Cookie", "frameforge_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "same-origin")
         self.send_header("Content-Length", str(len(content)))
         self.end_headers()
         self.wfile.write(content)
@@ -1436,6 +1502,9 @@ class DramaWebHandler(BaseHTTPRequestHandler):
         content = json.dumps({"error": message}, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "same-origin")
         self.send_header("Content-Length", str(len(content)))
         self.end_headers()
         self.wfile.write(content)
